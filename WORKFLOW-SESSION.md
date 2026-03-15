@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 1.6.0
+# @version: 1.7.0
 # @updated: 2026-03-15
 # @repo: https://github.com/Harshmaury/Atlas
 
@@ -113,6 +113,7 @@ Apply:
 ## CHANGELOG
 
 2026-03-15  v1.0.0  Project scaffolded
+2026-03-15  v1.7.0  Phase 2 step 6 — API endpoints, capabilities + conflicts + graph
 2026-03-15  v1.6.0  Phase 2 step 5 — conflict detection queries + tests
 2026-03-15  v1.5.0  Phase 2 step 4 — graph builder + tests
 2026-03-15  v1.4.0  Phase 2 step 3 — capability indexer + tests
