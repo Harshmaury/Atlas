@@ -1,5 +1,11 @@
 // @atlas-project: atlas
 // @atlas-path: internal/graph/queries.go
+// AT-Fix-03: FindOrphanedADRs rewritten.
+//   1. N+1 eliminated — GetAllDocuments replaces per-project GetDocumentsByProject loop.
+//   2. Self-reference false negative fixed — an ADR that mentions its own ID
+//      in its content was previously excluded from orphan results incorrectly.
+//      Now an edge only counts as a reference if FromID != the ADR's own path.
+//
 // Package graph — conflict detection queries.
 //
 // Three detectors, each returns a typed result slice:
@@ -184,56 +190,71 @@ func (q *QueryRunner) FindUndefinedConsumers() ([]UndefinedConsumerResult, error
 // FindOrphanedADRs returns ADR documents that are not referenced by any
 // other document in the graph. An ADR with no references may be stale or
 // superseded without a formal notation.
+//
+// AT-Fix-03 changes:
+//  1. Uses GetAllDocuments (single query) instead of per-project
+//     GetDocumentsByProject (N queries) — eliminates the N+1 pattern.
+//  2. Self-reference false negative fixed: an edge only counts as an
+//     external reference if e.FromID != the ADR document's own path.
+//     Previously, an ADR that mentioned its own ID (e.g. "See ADR-003")
+//     in its content was stored as an edge ADR-003.md → ADR-003 and
+//     incorrectly treated as "referenced", hiding it from orphan results.
 func (q *QueryRunner) FindOrphanedADRs() ([]OrphanedADRResult, error) {
-	projects, err := q.store.GetAllProjects()
+	// Single query — no N+1 per project (AT-Fix-03).
+	allDocs, err := q.store.GetAllDocuments()
 	if err != nil {
-		return nil, fmt.Errorf("get projects: %w", err)
+		return nil, fmt.Errorf("get all documents: %w", err)
 	}
 
-	// Collect all ADR doc paths.
 	type adrDoc struct {
 		path      string
 		projectID string
+		adrID     string // e.g. "ADR-003" extracted from path
 	}
 	var adrs []adrDoc
-
-	for _, p := range projects {
-		docs, err := q.store.GetDocumentsByProject(p.ID)
-		if err != nil {
+	for _, d := range allDocs {
+		if d.DocType != "adr" {
 			continue
 		}
-		for _, d := range docs {
-			if d.DocType == "adr" {
-				adrs = append(adrs, adrDoc{path: d.Path, projectID: p.ID})
-			}
+		id := extractADRID(d.Path)
+		if id == "" {
+			continue
 		}
+		adrs = append(adrs, adrDoc{path: d.Path, projectID: d.ProjectID, adrID: id})
 	}
-
 	if len(adrs) == 0 {
 		return nil, nil
 	}
 
-	// Build set of all edge ToIDs that are ADR identifiers.
 	edges, err := q.store.GetAllEdges()
 	if err != nil {
 		return nil, fmt.Errorf("get edges: %w", err)
 	}
 
-	referencedADRs := make(map[string]bool)
+	// referencedBy maps ADR-NNN → set of referencing document paths.
+	// We use a set so that an ADR referenced by multiple docs is not double-counted.
+	referencedBy := make(map[string]map[string]bool)
 	for _, e := range edges {
-		if e.EdgeType == "references" && isADRIdentifier(e.ToID) {
-			referencedADRs[e.ToID] = true
+		if e.EdgeType != "references" || !isADRIdentifier(e.ToID) {
+			continue
 		}
+		if referencedBy[e.ToID] == nil {
+			referencedBy[e.ToID] = make(map[string]bool)
+		}
+		referencedBy[e.ToID][e.FromID] = true
 	}
 
 	var results []OrphanedADRResult
 	for _, adr := range adrs {
-		// Extract ADR-NNN identifier from the file path.
-		adrID := extractADRID(adr.path)
-		if adrID == "" {
-			continue
-		}
-		if !referencedADRs[adrID] {
+		refs := referencedBy[adr.adrID]
+		// An ADR is orphaned only if no *other* document references it.
+		// Self-references (the ADR mentioning its own ID) don't count (AT-Fix-03).
+		external := 0
+		for from := range refs {
+			if from != adr.path {
+				external++
+			}		}
+		if external == 0 {
 			results = append(results, OrphanedADRResult{
 				DocPath: adr.path,
 				Project: adr.projectID,

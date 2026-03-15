@@ -91,6 +91,7 @@ type Storer interface {
 	// ── Documents ──────────────────────────────────────────────
 	UpsertDocument(d *Document) error
 	GetDocumentsByProject(projectID string) ([]*Document, error)
+	GetAllDocuments() ([]*Document, error)
 	SearchDocuments(query string, limit int) ([]*Document, error)
 
 	// ── Stats ──────────────────────────────────────────────────

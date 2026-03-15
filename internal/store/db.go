@@ -1,5 +1,7 @@
 // @atlas-project: atlas
 // @atlas-path: internal/store/db.go
+// AT-Fix-03: GetAllDocuments added — eliminates N+1 in FindOrphanedADRs.
+//
 // Package store manages the SQLite index database for Atlas.
 // Uses FTS5 for full-text search over source files and documents.
 // Versioned migrations follow the same pattern as Nexus state/db.go.
@@ -195,6 +197,19 @@ func (s *Store) SearchDocuments(query string, limit int) ([]*Document, error) {
 	`, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search documents: %w", err)
+	}
+	defer rows.Close()
+	return scanDocuments(rows)
+}
+
+// GetAllDocuments returns every indexed document across all projects.
+// Added for AT-Fix-03 to eliminate the N+1 query pattern in FindOrphanedADRs.
+func (s *Store) GetAllDocuments() ([]*Document, error) {
+	rows, err := s.db.Query(
+		`SELECT id, project_id, path, doc_type, indexed_at
+		 FROM documents ORDER BY project_id, path`)
+	if err != nil {
+		return nil, fmt.Errorf("get all documents: %w", err)
 	}
 	defer rows.Close()
 	return scanDocuments(rows)
