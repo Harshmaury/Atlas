@@ -1,0 +1,24 @@
+name: atlas
+id: atlas
+type: platform-service
+language: go
+version: 0.1.0
+
+keywords:
+  - atlas
+  - workspace knowledge
+  - platform-service
+  - source indexing
+  - capability claim
+
+services:
+  - id: atlas
+    name: Atlas Knowledge Service
+    provider: process
+    config: |
+      {
+        "command": "atlas",
+        "dir":     "~/workspace/projects/apps/atlas",
+        "env":     ["ATLAS_HTTP_ADDR=:8081"],
+        "log":     "~/.nexus/logs/atlas.log"
+      }
