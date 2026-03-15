@@ -1,6 +1,6 @@
 # WORKFLOW-SESSION.md
-# @version: 1.8.0
-# @updated: 2026-03-15
+# @version: 1.9.0
+# @updated: 2026-03-16
 # @repo: https://github.com/Harshmaury/Atlas
 
 ---
@@ -110,8 +110,16 @@ Apply:
 
 ---
 
+## CRITICAL FIXES
+
+✅ AT-Fix-01  Path containment in reindexOnEvent (filepath.Rel) (2026-03-16)
+✅ AT-Fix-02  Targeted re-index per file event, BuildAll deferred to WorkspaceUpdated
+  cmd/atlas/main.go  reindexOnEvent — filepath.Rel + IndexDocument
+                     TopicWorkspaceUpdated subscriber for BuildAll
+
 ## CHANGELOG
 
+2026-03-16  v1.9.0  fix: AT-Fix-01+02 — path containment + targeted re-index on events
 2026-03-15  v1.0.0  Project scaffolded
 2026-03-15  v1.8.0  Phase 2 complete — main.go wired, all 8 steps done
 2026-03-15  v1.7.0  Phase 2 step 6 — API endpoints, capabilities + conflicts + graph

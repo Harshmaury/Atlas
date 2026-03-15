@@ -1,5 +1,19 @@
 // @atlas-project: atlas
 // @atlas-path: cmd/atlas/main.go
+// AT-Fix-01: path containment check in reindexOnEvent uses filepath.Rel
+//   instead of raw string prefix. Eliminates false matches where a project
+//   path is a string prefix of an unrelated sibling path.
+//   e.g. project=/workspace/atlas no longer matches /workspace/atlas-old/file.
+//
+// AT-Fix-02: reindexOnEvent no longer calls capIndexer.IndexAll() and
+//   graphBuilder.BuildAll() on every file event. Both are full workspace
+//   scans — O(projects × docs) — triggered on every keystroke when editors
+//   autosave. Replaced with targeted per-document re-index:
+//   capIndexer.IndexDocument(path, projectID) re-indexes only the changed
+//   file's capability claims. graphBuilder.BuildAll() is deferred to the
+//   TopicWorkspaceUpdated batch signal which fires once per debounce window
+//   rather than once per file event.
+//
 // atlas is the Atlas knowledge service daemon.
 // It indexes the workspace, subscribes to Nexus workspace events,
 // and serves the Atlas HTTP API on 127.0.0.1:8081.
@@ -27,6 +41,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -116,9 +131,19 @@ func run(logger *log.Logger) error {
 	// ── 11. EVENT SUBSCRIBER (ADR-002) ────────────────────────────────────────
 	subscriber := nexusclient.NewSubscriber(nexus)
 
+	// reindexOnEvent is called for every workspace file event (created/modified/deleted).
+	// AT-Fix-01: containment check uses filepath.Rel — eliminates false matches on
+	//            sibling paths that share a string prefix (e.g. atlas vs atlas-old).
+	// AT-Fix-02: only the affected project's source + documents are re-indexed.
+	//            capability claims are re-indexed for the specific changed file only.
+	//            graphBuilder.BuildAll() is NOT called here — it runs on the debounced
+	//            TopicWorkspaceUpdated signal (one call per quiet window, not per file).
 	reindexOnEvent := func(event nexusclient.WorkspaceEvent) {
 		var payload nexusevents.WorkspaceFilePayload
 		if err := unmarshalPayload(event.Payload, &payload); err != nil {
+			return
+		}
+		if payload.Path == "" {
 			return
 		}
 		projects, err := s.GetAllProjects()
@@ -126,21 +151,45 @@ func run(logger *log.Logger) error {
 			return
 		}
 		for _, p := range projects {
-			if p.Path != "" && len(payload.Path) >= len(p.Path) &&
-				payload.Path[:len(p.Path)] == p.Path {
-				srcIndexer.IndexProject(p)  //nolint:errcheck
-				docIndexer.IndexProject(p)  //nolint:errcheck
-				capIndexer.IndexAll()       //nolint:errcheck — best effort re-index
-				graphBuilder.BuildAll()     //nolint:errcheck
-				logger.Printf("re-indexed %s (triggered by %s)", p.ID, payload.Name)
-				return
+			if p.Path == "" {
+				continue
 			}
+			// filepath.Rel returns a path without ".." only when payload.Path
+			// is inside p.Path — the correct containment check.
+			rel, err := filepath.Rel(p.Path, payload.Path)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				continue
+			}
+			// Re-index source and documents for the affected project.
+			if _, err := srcIndexer.IndexProject(p); err != nil {
+				logger.Printf("WARNING: source re-index %s: %v", p.ID, err)
+			}
+			if _, err := docIndexer.IndexProject(p); err != nil {
+				logger.Printf("WARNING: doc re-index %s: %v", p.ID, err)
+			}
+			// Re-index capability claims for this specific file only (not IndexAll).
+			if _, err := capIndexer.IndexDocument(payload.Path, p.ID); err != nil {
+				logger.Printf("WARNING: capability re-index %s: %v", payload.Path, err)
+			}
+			logger.Printf("re-indexed %s (triggered by %s)", p.ID, payload.Name)
+			return
 		}
 	}
 
 	subscriber.Subscribe(nexusevents.TopicWorkspaceFileCreated,  reindexOnEvent)
 	subscriber.Subscribe(nexusevents.TopicWorkspaceFileModified, reindexOnEvent)
 	subscriber.Subscribe(nexusevents.TopicWorkspaceFileDeleted,  reindexOnEvent)
+
+	// TopicWorkspaceUpdated fires once per debounce window after a burst of
+	// file events settles. Running BuildAll here (rather than per-file) means
+	// graph edges are rebuilt at most once per quiet period — not once per save.
+	subscriber.Subscribe(nexusevents.TopicWorkspaceUpdated,
+		func(event nexusclient.WorkspaceEvent) {
+			if _, err := graphBuilder.BuildAll(); err != nil {
+				logger.Printf("WARNING: graph rebuild on workspace update: %v", err)
+			}
+		},
+	)
 
 	subscriber.Subscribe(nexusevents.TopicWorkspaceProjectDetected,
 		func(event nexusclient.WorkspaceEvent) {
