@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 1.3.0
+# @version: 1.4.0
 # @updated: 2026-03-15
 # @repo: https://github.com/Harshmaury/Atlas
 
@@ -113,6 +113,7 @@ Apply:
 ## CHANGELOG
 
 2026-03-15  v1.0.0  Project scaffolded
+2026-03-15  v1.4.0  Phase 2 step 3 — capability indexer + tests
 2026-03-15  v1.3.0  Phase 2 step 2 — capability parser + tests
 2026-03-15  v1.2.0  Phase 2 step 1 — store migration, Capability + GraphEdge schema
 2026-03-15  v1.1.0  Phase 1 complete — workspace knowledge index
