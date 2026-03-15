@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 1.10.0
+# @version: 1.11.0
 # @updated: 2026-03-16
 # @repo: https://github.com/Harshmaury/Atlas
 
@@ -120,6 +120,11 @@ Apply:
   internal/graph/queries.go    FindOrphanedADRs rewritten
 
 ## ATLAS CRITICALS — ALL COMPLETE ✅
+
+## ATLAS HIGHS
+
+✅ AT-H-01  extractGoImports uses go/ast parser (2026-03-16)
+  internal/graph/builder.go  parser.ParseFile(ImportsOnly)
   cmd/atlas/main.go  reindexOnEvent — filepath.Rel + IndexDocument
                      TopicWorkspaceUpdated subscriber for BuildAll
 
@@ -127,6 +132,7 @@ Apply:
 
 2026-03-16  v1.9.0  fix: AT-Fix-01+02 — path containment + targeted re-index on events
 2026-03-16  v1.10.0 fix: AT-Fix-03 — orphan detector N+1 + self-reference false negative
+2026-03-16  v1.11.0 fix: AT-H-01  — extractGoImports rewritten with go/ast parser
 2026-03-15  v1.0.0  Project scaffolded
 2026-03-15  v1.8.0  Phase 2 complete — main.go wired, all 8 steps done
 2026-03-15  v1.7.0  Phase 2 step 6 — API endpoints, capabilities + conflicts + graph

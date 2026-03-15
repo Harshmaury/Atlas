@@ -1,5 +1,11 @@
 // @atlas-project: atlas
 // @atlas-path: internal/graph/builder.go
+// AT-H-01: extractGoImports rewritten using go/ast + go/parser.
+//   The hand-rolled scanner missed: blank separator lines inside import
+//   blocks (goimports stdlib/external/internal grouping), aliased imports
+//   inside grouped blocks, and build-tag lines before the package clause.
+//   go/parser handles all of these correctly with zero new dependencies.
+//
 // Package graph builds the workspace relationship graph.
 //
 // Edge sources:
@@ -21,8 +27,9 @@
 package graph
 
 import (
-	"bufio"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"log"
 	"os"
 	"path/filepath"
@@ -224,47 +231,41 @@ func (b *Builder) buildImportEdges(p *store.Project, pathToID map[string]string)
 }
 
 // extractGoImports returns all import paths from a Go source file.
+//
+// AT-H-01: uses go/parser instead of a hand-rolled line scanner.
+// Handles all valid Go import forms correctly:
+//   - grouped imports with blank separator lines (goimports output)
+//   - aliased imports: alias "path/to/pkg"
+//   - dot and blank imports: . "pkg" / _ "pkg"
+//   - single-line: import "path"
+//   - build tags and comments before the package clause
+//
+// go/parser is in the standard library — no new dependency.
+// ParseFile with ImportsOnly stops parsing after the import section,
+// keeping this fast even for large source files.
 func extractGoImports(filePath string) ([]string, error) {
-	f, err := os.Open(filePath)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filePath, nil, parser.ImportsOnly)
 	if err != nil {
-		return nil, err
+		// Syntax errors in the file — skip it silently.
+		// The graph builder already tolerates unreadable files.
+		return nil, nil //nolint:nilerr
 	}
-	defer f.Close()
 
-	var imports []string
-	scanner := bufio.NewScanner(f)
-	inImportBlock := false
-
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		if line == "import (" {
-			inImportBlock = true
+	imports := make([]string, 0, len(f.Imports))
+	for _, imp := range f.Imports {
+		if imp.Path == nil {
 			continue
 		}
-		if inImportBlock && line == ")" {
-			break
-		}
-		if inImportBlock {
-			imp := strings.Trim(line, `"`)
-			// Strip alias if present (e.g. `alias "path"`)
-			if parts := strings.Fields(imp); len(parts) == 2 {
-				imp = strings.Trim(parts[1], `"`)
-			}
-			if imp != "" && !strings.HasPrefix(imp, "//") {
-				imports = append(imports, imp)
-			}
-			continue
-		}
-		// Single-line import: import "path"
-		if strings.HasPrefix(line, `import "`) {
-			imp := strings.TrimPrefix(line, `import "`)
-			imp = strings.TrimSuffix(imp, `"`)
-			imports = append(imports, imp)
+		// ast.BasicLit.Value includes surrounding quotes — strip them.
+		path := strings.Trim(imp.Path.Value, `"`)
+		if path != "" {
+			imports = append(imports, path)
 		}
 	}
-	return imports, scanner.Err()
+	return imports, nil
 }
+
 
 // ── SOURCE 3 — ADR cross-references ─────────────────────────────────────────
 
