@@ -3,6 +3,10 @@
 // Package store manages the SQLite index database for Atlas.
 // Uses FTS5 for full-text search over source files and documents.
 // Versioned migrations follow the same pattern as Nexus state/db.go.
+//
+// Phase 2 additions (migration v2):
+//   capabilities  — structured capability claims from architecture docs
+//   graph_edges   — directional relationships between workspace entities
 package store
 
 import (
@@ -210,6 +214,116 @@ func (s *Store) CountDocuments() (int, error) {
 	return n, err
 }
 
+// ── CAPABILITIES (PHASE 2) ────────────────────────────────────────────────────
+
+func (s *Store) UpsertCapability(c *Capability) error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(`
+		INSERT INTO capabilities (project_id, owner, domain, name, doc_path, doc_type, indexed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(owner, name) DO UPDATE SET
+			project_id=excluded.project_id, domain=excluded.domain,
+			doc_path=excluded.doc_path, doc_type=excluded.doc_type,
+			indexed_at=excluded.indexed_at
+	`, c.ProjectID, c.Owner, c.Domain, c.Name, c.DocPath, c.DocType, now)
+	if err != nil {
+		return fmt.Errorf("upsert capability %s/%s: %w", c.Owner, c.Name, err)
+	}
+	return nil
+}
+
+func (s *Store) GetCapabilitiesByOwner(owner string) ([]*Capability, error) {
+	rows, err := s.db.Query(`
+		SELECT id, project_id, owner, domain, name, doc_path, doc_type, indexed_at
+		FROM capabilities WHERE owner = ? ORDER BY name
+	`, owner)
+	if err != nil {
+		return nil, fmt.Errorf("get capabilities for %s: %w", owner, err)
+	}
+	defer rows.Close()
+	return scanCapabilities(rows)
+}
+
+func (s *Store) GetAllCapabilities() ([]*Capability, error) {
+	rows, err := s.db.Query(`
+		SELECT id, project_id, owner, domain, name, doc_path, doc_type, indexed_at
+		FROM capabilities ORDER BY domain, owner, name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("get all capabilities: %w", err)
+	}
+	defer rows.Close()
+	return scanCapabilities(rows)
+}
+
+func (s *Store) DeleteCapabilitiesByDoc(docPath string) error {
+	_, err := s.db.Exec(`DELETE FROM capabilities WHERE doc_path = ?`, docPath)
+	return err
+}
+
+func (s *Store) CountCapabilities() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM capabilities`).Scan(&n)
+	return n, err
+}
+
+// ── GRAPH EDGES (PHASE 2) ─────────────────────────────────────────────────────
+
+func (s *Store) UpsertEdge(e *GraphEdge) error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(`
+		INSERT INTO graph_edges (from_id, to_id, edge_type, source, created_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(from_id, to_id, edge_type) DO UPDATE SET
+			source=excluded.source, created_at=excluded.created_at
+	`, e.FromID, e.ToID, e.EdgeType, e.Source, now)
+	if err != nil {
+		return fmt.Errorf("upsert edge %s→%s: %w", e.FromID, e.ToID, err)
+	}
+	return nil
+}
+
+func (s *Store) GetEdgesFrom(fromID string) ([]*GraphEdge, error) {
+	rows, err := s.db.Query(`
+		SELECT id, from_id, to_id, edge_type, source, created_at
+		FROM graph_edges WHERE from_id = ? ORDER BY edge_type, to_id
+	`, fromID)
+	if err != nil {
+		return nil, fmt.Errorf("get edges from %s: %w", fromID, err)
+	}
+	defer rows.Close()
+	return scanEdges(rows)
+}
+
+func (s *Store) GetEdgesTo(toID string) ([]*GraphEdge, error) {
+	rows, err := s.db.Query(`
+		SELECT id, from_id, to_id, edge_type, source, created_at
+		FROM graph_edges WHERE to_id = ? ORDER BY edge_type, from_id
+	`, toID)
+	if err != nil {
+		return nil, fmt.Errorf("get edges to %s: %w", toID, err)
+	}
+	defer rows.Close()
+	return scanEdges(rows)
+}
+
+func (s *Store) GetAllEdges() ([]*GraphEdge, error) {
+	rows, err := s.db.Query(`
+		SELECT id, from_id, to_id, edge_type, source, created_at
+		FROM graph_edges ORDER BY from_id, edge_type, to_id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("get all edges: %w", err)
+	}
+	defer rows.Close()
+	return scanEdges(rows)
+}
+
+func (s *Store) DeleteEdgesBySource(source string) error {
+	_, err := s.db.Exec(`DELETE FROM graph_edges WHERE source = ?`, source)
+	return err
+}
+
 // ── MIGRATIONS ────────────────────────────────────────────────────────────────
 
 type schemaVersion struct {
@@ -218,7 +332,7 @@ type schemaVersion struct {
 }
 
 var allMigrations = []schemaVersion{
-	// v1 — initial schema
+	// v1 — initial schema (Phase 1)
 	{1, `CREATE TABLE IF NOT EXISTS projects (
 		id         TEXT PRIMARY KEY,
 		name       TEXT NOT NULL DEFAULT '',
@@ -243,18 +357,43 @@ var allMigrations = []schemaVersion{
 		doc_type   TEXT NOT NULL DEFAULT '',
 		indexed_at DATETIME NOT NULL
 	)`},
-	// FTS5 virtual tables for full-text search
 	{1, `CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
 		path, language, content=files, content_rowid=id
 	)`},
 	{1, `CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
 		path, doc_type, content=documents, content_rowid=id
 	)`},
-	// Indexes
 	{1, `CREATE INDEX IF NOT EXISTS idx_files_project    ON files(project_id)`},
 	{1, `CREATE INDEX IF NOT EXISTS idx_files_language   ON files(language)`},
 	{1, `CREATE INDEX IF NOT EXISTS idx_docs_project     ON documents(project_id)`},
 	{1, `CREATE INDEX IF NOT EXISTS idx_docs_type        ON documents(doc_type)`},
+
+	// v2 — structured capability model + graph (Phase 2)
+	{2, `CREATE TABLE IF NOT EXISTS capabilities (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id TEXT    NOT NULL DEFAULT '',
+		owner      TEXT    NOT NULL DEFAULT '',
+		domain     TEXT    NOT NULL DEFAULT '',
+		name       TEXT    NOT NULL DEFAULT '',
+		doc_path   TEXT    NOT NULL DEFAULT '',
+		doc_type   TEXT    NOT NULL DEFAULT '',
+		indexed_at DATETIME NOT NULL,
+		UNIQUE(owner, name)
+	)`},
+	{2, `CREATE TABLE IF NOT EXISTS graph_edges (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		from_id    TEXT    NOT NULL DEFAULT '',
+		to_id      TEXT    NOT NULL DEFAULT '',
+		edge_type  TEXT    NOT NULL DEFAULT '',
+		source     TEXT    NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL,
+		UNIQUE(from_id, to_id, edge_type)
+	)`},
+	{2, `CREATE INDEX IF NOT EXISTS idx_cap_owner  ON capabilities(owner)`},
+	{2, `CREATE INDEX IF NOT EXISTS idx_cap_domain ON capabilities(domain)`},
+	{2, `CREATE INDEX IF NOT EXISTS idx_edge_from  ON graph_edges(from_id)`},
+	{2, `CREATE INDEX IF NOT EXISTS idx_edge_to    ON graph_edges(to_id)`},
+	{2, `CREATE INDEX IF NOT EXISTS idx_edge_type  ON graph_edges(edge_type)`},
 }
 
 func (s *Store) migrate() error {
@@ -317,4 +456,28 @@ func scanDocuments(rows *sql.Rows) ([]*Document, error) {
 		docs = append(docs, d)
 	}
 	return docs, rows.Err()
+}
+
+func scanCapabilities(rows *sql.Rows) ([]*Capability, error) {
+	var caps []*Capability
+	for rows.Next() {
+		c := &Capability{}
+		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Owner, &c.Domain, &c.Name, &c.DocPath, &c.DocType, &c.IndexedAt); err != nil {
+			return nil, fmt.Errorf("scan capability: %w", err)
+		}
+		caps = append(caps, c)
+	}
+	return caps, rows.Err()
+}
+
+func scanEdges(rows *sql.Rows) ([]*GraphEdge, error) {
+	var edges []*GraphEdge
+	for rows.Next() {
+		e := &GraphEdge{}
+		if err := rows.Scan(&e.ID, &e.FromID, &e.ToID, &e.EdgeType, &e.Source, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan edge: %w", err)
+		}
+		edges = append(edges, e)
+	}
+	return edges, rows.Err()
 }

@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 1.1.0
+# @version: 1.2.0
 # @updated: 2026-03-15
 # @repo: https://github.com/Harshmaury/Atlas
 
@@ -66,7 +66,9 @@ Nexus eventbus imported for topic constants (ADR-002)
   internal/api/server.go              HTTP server :8081 (ADR-003)
   internal/api/handler/workspace.go   GET /workspace routes
 
-### ⏳ Phase 2 — Structured Capability Model (NOT STARTED)
+### 🔄 Phase 2 — Structured Capability Model (IN PROGRESS)
+  internal/store/storer.go        Capability + GraphEdge types, 8 new interface methods
+  internal/store/db.go             v2 migration — capabilities + graph_edges tables
   Requires Phase 1 index running and populated
 
 ---
@@ -109,4 +111,5 @@ Apply:
 ## CHANGELOG
 
 2026-03-15  v1.0.0  Project scaffolded
+2026-03-15  v1.2.0  Phase 2 step 1 — store migration, Capability + GraphEdge schema
 2026-03-15  v1.1.0  Phase 1 complete — workspace knowledge index
