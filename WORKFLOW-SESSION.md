@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 1.7.0
+# @version: 1.8.0
 # @updated: 2026-03-15
 # @repo: https://github.com/Harshmaury/Atlas
 
@@ -66,7 +66,7 @@ Nexus eventbus imported for topic constants (ADR-002)
   internal/api/server.go              HTTP server :8081 (ADR-003)
   internal/api/handler/workspace.go   GET /workspace routes
 
-### 🔄 Phase 2 — Structured Capability Model (IN PROGRESS)
+### ✅ Phase 2 — Structured Capability Model (COMPLETE)
   internal/capability/parser.go    ParseDocument — capability/boundary/ADR/spec extraction
   internal/capability/parser_test.go  table-driven tests, all three doc types
   internal/store/storer.go        Capability + GraphEdge types, 8 new interface methods
@@ -113,6 +113,7 @@ Apply:
 ## CHANGELOG
 
 2026-03-15  v1.0.0  Project scaffolded
+2026-03-15  v1.8.0  Phase 2 complete — main.go wired, all 8 steps done
 2026-03-15  v1.7.0  Phase 2 step 6 — API endpoints, capabilities + conflicts + graph
 2026-03-15  v1.6.0  Phase 2 step 5 — conflict detection queries + tests
 2026-03-15  v1.5.0  Phase 2 step 4 — graph builder + tests

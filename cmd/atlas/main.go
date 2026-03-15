@@ -11,9 +11,12 @@
 //  4. Discovery (workspace scan)
 //  5. Indexers (source + document)
 //  6. Context generator
-//  7. HTTP API server (:8081 — ADR-003)
-//  8. Event subscriber (Nexus workspace events — ADR-002)
-//  9. Initial index run (blocking — completes before serving)
+//  7. Capability indexer     ← Phase 2
+//  8. Graph builder          ← Phase 2
+//  9. Query runner           ← Phase 2
+// 10. HTTP API server (:8081 — ADR-003)
+// 11. Event subscriber (Nexus workspace events — ADR-002)
+// 12. Initial index run (blocking — completes before serving)
 package main
 
 import (
@@ -29,15 +32,17 @@ import (
 
 	"github.com/Harshmaury/Atlas/internal/api"
 	atlascontext "github.com/Harshmaury/Atlas/internal/context"
+	"github.com/Harshmaury/Atlas/internal/capability"
 	"github.com/Harshmaury/Atlas/internal/config"
 	"github.com/Harshmaury/Atlas/internal/discovery"
+	"github.com/Harshmaury/Atlas/internal/graph"
 	"github.com/Harshmaury/Atlas/internal/indexer"
 	nexusclient "github.com/Harshmaury/Atlas/internal/nexus"
 	"github.com/Harshmaury/Atlas/internal/store"
 	nexusevents "github.com/Harshmaury/Nexus/pkg/events"
 )
 
-const atlasVersion = "0.1.0"
+const atlasVersion = "0.2.0"
 
 func main() {
 	logger := log.New(os.Stdout, "[atlas] ", log.LstdFlags)
@@ -55,7 +60,6 @@ func run(logger *log.Logger) error {
 	nexusAddr     := config.EnvOrDefault("NEXUS_HTTP_ADDR", config.DefaultNexusAddr)
 	dbPath        := config.ExpandHome(config.EnvOrDefault("ATLAS_DB_PATH", config.DefaultDBPath))
 
-	// Ensure db directory exists.
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
 	}
@@ -75,7 +79,6 @@ func run(logger *log.Logger) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Check Nexus reachability — warn but continue if unavailable.
 	if err := nexus.Ping(ctx); err != nil {
 		logger.Printf("WARNING: Nexus not reachable at %s — will retry: %v", nexusAddr, err)
 	} else {
@@ -92,24 +95,32 @@ func run(logger *log.Logger) error {
 	// ── 6. CONTEXT GENERATOR ─────────────────────────────────────────────────
 	generator := atlascontext.New(s, workspaceRoot)
 
-	// ── 7. HTTP API ──────────────────────────────────────────────────────────
+	// ── 7. CAPABILITY INDEXER (Phase 2) ──────────────────────────────────────
+	capIndexer := capability.NewIndexer(s, logger)
+
+	// ── 8. GRAPH BUILDER (Phase 2) ───────────────────────────────────────────
+	graphBuilder := graph.NewBuilder(s, logger)
+
+	// ── 9. QUERY RUNNER (Phase 2) ────────────────────────────────────────────
+	queryRunner := graph.NewQueryRunner(s)
+
+	// ── 10. HTTP API ──────────────────────────────────────────────────────────
 	apiServer := api.NewServer(api.ServerConfig{
-		Addr:      httpAddr,
-		Store:     s,
-		Generator: generator,
-		Logger:    logger,
+		Addr:        httpAddr,
+		Store:       s,
+		Generator:   generator,
+		QueryRunner: queryRunner,
+		Logger:      logger,
 	})
 
-	// ── 8. EVENT SUBSCRIBER (ADR-002) ────────────────────────────────────────
+	// ── 11. EVENT SUBSCRIBER (ADR-002) ────────────────────────────────────────
 	subscriber := nexusclient.NewSubscriber(nexus)
 
-	// On workspace file events — re-index the affected project.
 	reindexOnEvent := func(event nexusclient.WorkspaceEvent) {
 		var payload nexusevents.WorkspaceFilePayload
 		if err := unmarshalPayload(event.Payload, &payload); err != nil {
 			return
 		}
-		// Find which project owns this file and re-index it.
 		projects, err := s.GetAllProjects()
 		if err != nil {
 			return
@@ -117,8 +128,10 @@ func run(logger *log.Logger) error {
 		for _, p := range projects {
 			if p.Path != "" && len(payload.Path) >= len(p.Path) &&
 				payload.Path[:len(p.Path)] == p.Path {
-				srcIndexer.IndexProject(p)  //nolint:errcheck — best effort
+				srcIndexer.IndexProject(p)  //nolint:errcheck
 				docIndexer.IndexProject(p)  //nolint:errcheck
+				capIndexer.IndexAll()       //nolint:errcheck — best effort re-index
+				graphBuilder.BuildAll()     //nolint:errcheck
 				logger.Printf("re-indexed %s (triggered by %s)", p.ID, payload.Name)
 				return
 			}
@@ -129,23 +142,25 @@ func run(logger *log.Logger) error {
 	subscriber.Subscribe(nexusevents.TopicWorkspaceFileModified, reindexOnEvent)
 	subscriber.Subscribe(nexusevents.TopicWorkspaceFileDeleted,  reindexOnEvent)
 
-	// On project detected — run full discovery and re-index.
 	subscriber.Subscribe(nexusevents.TopicWorkspaceProjectDetected,
 		func(event nexusclient.WorkspaceEvent) {
 			logger.Printf("new project detected — running full index")
-			runFullIndex(ctx, logger, nexus, scanner, srcIndexer, docIndexer, workspaceRoot, s)
+			runFullIndex(ctx, logger, nexus, scanner, srcIndexer, docIndexer,
+				capIndexer, graphBuilder, workspaceRoot, s)
 		},
 	)
 
-	// ── 9. INITIAL INDEX ─────────────────────────────────────────────────────
+	// ── 12. INITIAL INDEX ─────────────────────────────────────────────────────
 	logger.Printf("running initial workspace index (root=%s)", workspaceRoot)
-	runFullIndex(ctx, logger, nexus, scanner, srcIndexer, docIndexer, workspaceRoot, s)
+	runFullIndex(ctx, logger, nexus, scanner, srcIndexer, docIndexer,
+		capIndexer, graphBuilder, workspaceRoot, s)
 
-	files, _ := s.CountFiles()
-	docs, _  := s.CountDocuments()
-	logger.Printf("index complete — %d files, %d documents", files, docs)
+	files, _  := s.CountFiles()
+	docs, _   := s.CountDocuments()
+	caps, _   := s.CountCapabilities()
+	logger.Printf("index complete — %d files, %d documents, %d capabilities", files, docs, caps)
 
-	// ── START GOROUTINES ─────────────────────────────────────────────────────
+	// ── START GOROUTINES ──────────────────────────────────────────────────────
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 
@@ -169,7 +184,7 @@ func run(logger *log.Logger) error {
 	logger.Printf("✓ Atlas ready — http=%s workspace=%s db=%s",
 		httpAddr, workspaceRoot, dbPath)
 
-	// ── WAIT FOR SHUTDOWN ────────────────────────────────────────────────────
+	// ── WAIT FOR SHUTDOWN ─────────────────────────────────────────────────────
 	select {
 	case sig := <-sigCh:
 		logger.Printf("received %s — shutting down", sig)
@@ -187,7 +202,7 @@ func run(logger *log.Logger) error {
 	return nil
 }
 
-// runFullIndex discovers projects and indexes all source and documents.
+// runFullIndex discovers projects and indexes source, documents, capabilities, and graph.
 func runFullIndex(
 	ctx context.Context,
 	logger *log.Logger,
@@ -195,26 +210,24 @@ func runFullIndex(
 	scanner *discovery.Scanner,
 	srcIdx *indexer.SourceIndexer,
 	docIdx *indexer.DocumentIndexer,
+	capIdx *capability.Indexer,
+	graphBld *graph.Builder,
 	workspaceRoot string,
 	s store.Storer,
 ) {
-	// Fetch authoritative project list from Nexus (ADR-001).
 	nexusProjects, err := nexus.GetProjects(ctx)
 	if err != nil {
 		logger.Printf("WARNING: cannot fetch Nexus projects: %v", err)
 		nexusProjects = nil
 	}
 
-	// Scan workspace for all projects.
 	scanned, err := scanner.ScanWorkspace()
 	if err != nil {
 		logger.Printf("WARNING: workspace scan error: %v", err)
 	}
 
-	// Merge — Nexus is authoritative.
 	projects := discovery.MergeWithNexus(scanned, nexusProjects)
 
-	// Ensure platform pseudo-project exists for workspace-level docs.
 	s.UpsertProject(&store.Project{ //nolint:errcheck
 		ID:     "platform",
 		Name:   "Platform Architecture",
@@ -223,7 +236,7 @@ func runFullIndex(
 	})
 
 	for _, p := range projects {
-		s.UpsertProject(p) //nolint:errcheck — best effort
+		s.UpsertProject(p) //nolint:errcheck
 
 		if _, err := srcIdx.IndexProject(p); err != nil {
 			logger.Printf("WARNING: source index %s: %v", p.ID, err)
@@ -233,12 +246,25 @@ func runFullIndex(
 		}
 	}
 
-	// Index workspace-level architecture directory.
 	archDir := workspaceRoot + "/architecture"
 	docIdx.IndexWorkspaceArchitecture(archDir) //nolint:errcheck
+
+	// Phase 2 — capability and graph index runs after all docs are indexed.
+	if result, err := capIdx.IndexAll(); err != nil {
+		logger.Printf("WARNING: capability index: %v", err)
+	} else {
+		logger.Printf("capability index — %d claims from %d docs",
+			result.ClaimsStored, result.DocsIndexed)
+	}
+
+	if result, err := graphBld.BuildAll(); err != nil {
+		logger.Printf("WARNING: graph build: %v", err)
+	} else {
+		logger.Printf("graph build — %d nexus.yaml + %d import + %d ADR ref edges",
+			result.EdgesFromNexusYAML, result.EdgesFromImports, result.EdgesFromADRRefs)
+	}
 }
 
-// unmarshalPayload decodes a JSON event payload.
 func unmarshalPayload(raw []byte, v any) error {
 	if len(raw) == 0 {
 		return fmt.Errorf("empty payload")
