@@ -1,5 +1,12 @@
 // @atlas-project: atlas
 // @atlas-path: internal/discovery/scanner.go
+// AT-H-04: manifestLanguage iteration order is now deterministic.
+//   map iteration in Go is random — if a directory contains both go.mod
+//   and package.json the detected language was non-deterministic.
+//   Replaced with manifestPriority, an ordered slice that defines
+//   precedence: .nexus.yaml > go.mod > Cargo.toml > pyproject.toml >
+//   requirements.txt > package.json — more specific manifests win.
+//
 // Package discovery walks the workspace and detects projects.
 // It supplements the Nexus project registry (ADR-001) with locally
 // detected projects that may not yet be registered with Nexus.
@@ -17,13 +24,22 @@ import (
 
 // ── LANGUAGE DETECTION ───────────────────────────────────────────────────────
 
-// manifestLanguage maps project manifest filenames to the language they imply.
-var manifestLanguage = map[string]string{
-	"go.mod":        "go",
-	"package.json":  "node",
-	"Cargo.toml":    "rust",
-	"pyproject.toml":"python",
-	"requirements.txt": "python",
+// manifestPriority defines manifest filenames in detection precedence order.
+// AT-H-04: ordered slice replaces map to guarantee deterministic language
+// detection when a directory contains multiple manifests (e.g. a Go project
+// with an embedded package.json for frontend tooling).
+// First match wins — more specific manifests are listed first.
+type manifestEntry struct {
+	filename string
+	language string
+}
+
+var manifestPriority = []manifestEntry{
+	{"go.mod",           "go"},
+	{"Cargo.toml",       "rust"},
+	{"pyproject.toml",   "python"},
+	{"requirements.txt", "python"},
+	{"package.json",     "node"},
 }
 
 // extensionLanguage maps source file extensions to languages.
@@ -143,16 +159,16 @@ func (s *Scanner) ScanWorkspace() ([]*ScanResult, error) {
 			return filepath.SkipDir
 		}
 
-		// Fall back to language manifest detection.
-		for manifest, lang := range manifestLanguage {
-			if _, err := os.Stat(filepath.Join(path, manifest)); err == nil {
+		// Fall back to language manifest detection (AT-H-04: ordered, deterministic).
+		for _, m := range manifestPriority {
+			if _, err := os.Stat(filepath.Join(path, m.filename)); err == nil {
 				seen[path] = true
 				name := filepath.Base(path)
 				results = append(results, &ScanResult{
 					ID:       strings.ToLower(name),
 					Name:     name,
 					Path:     path,
-					Language: lang,
+					Language: m.language,
 					Type:     "project",
 					Source:   "detected",
 				})

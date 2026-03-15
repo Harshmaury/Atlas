@@ -1,5 +1,9 @@
 // @atlas-project: atlas
 // @atlas-path: internal/capability/parser.go
+// AT-H-03: local cutPrefix removed — replaced with strings.CutPrefix.
+//   The function was a backport for Go < 1.20. Atlas uses go 1.25.0.
+//   The dead reimplementation is removed and all call sites updated.
+//
 // Package capability extracts structured capability claims from architecture documents.
 //
 // Parsing strategy — three document types each have distinct patterns:
@@ -293,7 +297,7 @@ func extractOwnershipClaim(line string) (owner, capName string) {
 		rest := line[len(prefix):]
 
 		// "owns <capability>"
-		if _, ok := cutPrefix(strings.ToLower(rest), "owns "); ok {
+		if _, ok := strings.CutPrefix(strings.ToLower(rest), "owns "); ok {
 			cap := extractCapPhrase(rest[len("owns "):])
 			if cap != "" {
 				return svc, cap
@@ -301,7 +305,7 @@ func extractOwnershipClaim(line string) (owner, capName string) {
 		}
 
 		// "is the <adjective?> <capability>"
-		if _, ok := cutPrefix(strings.ToLower(rest), "is the "); ok {
+		if _, ok := strings.CutPrefix(strings.ToLower(rest), "is the "); ok {
 			cap := extractCapPhrase(rest[len("is the "):])
 			if cap != "" {
 				return svc, cap
@@ -342,10 +346,4 @@ func extractBulletItem(line string) string {
 	return ""
 }
 
-// cutPrefix is strings.CutPrefix for Go versions before 1.20.
-func cutPrefix(s, prefix string) (string, bool) {
-	if strings.HasPrefix(s, prefix) {
-		return s[len(prefix):], true
-	}
-	return s, false
-}
+

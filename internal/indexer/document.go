@@ -1,9 +1,14 @@
 // @atlas-project: atlas
 // @atlas-path: internal/indexer/document.go
+// AT-H-05: IndexProject now captures and returns WalkDir errors.
+//   Previously filepath.WalkDir return value was discarded entirely —
+//   permission errors and unreadable directories were silently ignored.
+//
 // DocumentIndexer indexes architecture documents, ADRs, and READMEs.
 package indexer
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,9 +81,9 @@ func (idx *DocumentIndexer) IndexProject(p *store.Project) (int, error) {
 	}
 
 	count := 0
-	filepath.WalkDir(p.Path, func(path string, d os.DirEntry, err error) error {
+	if err := filepath.WalkDir(p.Path, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return nil // skip individual unreadable entries, continue walk
 		}
 		if d.IsDir() {
 			if d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor" {
@@ -99,7 +104,9 @@ func (idx *DocumentIndexer) IndexProject(p *store.Project) (int, error) {
 		})
 		count++
 		return nil
-	})
+	}); err != nil {
+		return count, fmt.Errorf("walk %s: %w", p.Path, err)
+	}
 
 	return count, nil
 }
