@@ -111,4 +111,9 @@ type Storer interface {
 	GetEdgesTo(toID string) ([]*GraphEdge, error)
 	GetAllEdges() ([]*GraphEdge, error)
 	DeleteEdgesBySource(source string) error
+
+	// WithEdgeTransaction executes fn inside a SQLite transaction.
+	// If fn returns an error the transaction is rolled back.
+	// Used by BuildAll to make delete+rebuild atomic per edge source (AT-H-02).
+	WithEdgeTransaction(fn func() error) error
 }

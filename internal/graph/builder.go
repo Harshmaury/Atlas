@@ -1,5 +1,11 @@
 // @atlas-project: atlas
 // @atlas-path: internal/graph/builder.go
+// AT-H-02: BuildAll wraps delete+rebuild per source in a transaction.
+//   Previously DeleteEdgesBySource ran outside any transaction — if the
+//   process crashed between delete and rebuild the graph was permanently
+//   empty for that source. Each source now runs in its own BEGIN/COMMIT
+//   so a crash leaves the previous edges intact rather than none.
+//
 // AT-H-01: extractGoImports rewritten using go/ast + go/parser.
 //   The hand-rolled scanner missed: blank separator lines inside import
 //   blocks (goimports stdlib/external/internal grouping), aliased imports
@@ -92,33 +98,64 @@ func (b *Builder) BuildAll() (*BuildResult, error) {
 		}
 	}
 
-	// Clear stale edges before rebuilding each source.
-	for _, source := range []string{"nexus.yaml", "import", "adr"} {
-		if err := b.store.DeleteEdgesBySource(source); err != nil {
-			result.Errors = append(result.Errors,
-				fmt.Sprintf("clear edges source=%s: %v", source, err))
+	// Each source is rebuilt atomically (AT-H-02):
+	//   1. DeleteEdgesBySource removes stale edges
+	//   2. rebuild loop adds fresh edges
+	// Both run inside WithEdgeTransaction — a crash leaves previous edges
+	// intact rather than an empty graph for that source.
+
+	// Source 1 — nexus.yaml service dependencies.
+	if err := b.store.WithEdgeTransaction(func() error {
+		if err := b.store.DeleteEdgesBySource("nexus.yaml"); err != nil {
+			return fmt.Errorf("clear nexus.yaml edges: %w", err)
 		}
+		for _, p := range projects {
+			if p.Path == "" {
+				continue
+			}
+			n, errs := b.buildNexusYAMLEdges(p)
+			result.EdgesFromNexusYAML += n
+			result.Errors = append(result.Errors, errs...)
+		}
+		return nil
+	}); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("nexus.yaml transaction: %v", err))
 	}
 
-	for _, p := range projects {
-		if p.Path == "" {
-			continue
+	// Source 2 — Go import cross-references.
+	if err := b.store.WithEdgeTransaction(func() error {
+		if err := b.store.DeleteEdgesBySource("import"); err != nil {
+			return fmt.Errorf("clear import edges: %w", err)
 		}
+		for _, p := range projects {
+			if p.Path == "" {
+				continue
+			}
+			n, errs := b.buildImportEdges(p, pathToID)
+			result.EdgesFromImports += n
+			result.Errors = append(result.Errors, errs...)
+		}
+		return nil
+	}); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("import transaction: %v", err))
+	}
 
-		// Source 1 — nexus.yaml service dependencies.
-		n, errs := b.buildNexusYAMLEdges(p)
-		result.EdgesFromNexusYAML += n
-		result.Errors = append(result.Errors, errs...)
-
-		// Source 2 — Go import cross-references.
-		n, errs = b.buildImportEdges(p, pathToID)
-		result.EdgesFromImports += n
-		result.Errors = append(result.Errors, errs...)
-
-		// Source 3 — ADR cross-references in architecture docs.
-		n, errs = b.buildADRRefEdges(p)
-		result.EdgesFromADRRefs += n
-		result.Errors = append(result.Errors, errs...)
+	// Source 3 — ADR cross-references in architecture docs.
+	if err := b.store.WithEdgeTransaction(func() error {
+		if err := b.store.DeleteEdgesBySource("adr"); err != nil {
+			return fmt.Errorf("clear adr edges: %w", err)
+		}
+		for _, p := range projects {
+			if p.Path == "" {
+				continue
+			}
+			n, errs := b.buildADRRefEdges(p)
+			result.EdgesFromADRRefs += n
+			result.Errors = append(result.Errors, errs...)
+		}
+		return nil
+	}); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("adr transaction: %v", err))
 	}
 
 	return result, nil

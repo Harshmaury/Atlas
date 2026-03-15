@@ -1,5 +1,7 @@
 // @atlas-project: atlas
 // @atlas-path: internal/store/db.go
+// AT-H-02: WithEdgeTransaction implemented — BEGIN/COMMIT/ROLLBACK wrapper.
+//
 // AT-Fix-03: GetAllDocuments added — eliminates N+1 in FindOrphanedADRs.
 //
 // Package store manages the SQLite index database for Atlas.
@@ -337,6 +339,25 @@ func (s *Store) GetAllEdges() ([]*GraphEdge, error) {
 func (s *Store) DeleteEdgesBySource(source string) error {
 	_, err := s.db.Exec(`DELETE FROM graph_edges WHERE source = ?`, source)
 	return err
+}
+
+// WithEdgeTransaction executes fn inside a SQLite transaction.
+// If fn returns an error the transaction is rolled back and the error returned.
+// The caller should not call Commit/Rollback — this method owns the lifecycle.
+// AT-H-02: used by BuildAll to make delete+rebuild atomic per edge source.
+func (s *Store) WithEdgeTransaction(fn func() error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	if err := fn(); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
 }
 
 // ── MIGRATIONS ────────────────────────────────────────────────────────────────
