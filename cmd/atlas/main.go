@@ -1,5 +1,8 @@
 // @atlas-project: atlas
 // @atlas-path: cmd/atlas/main.go
+// ADR-008: ATLAS_SERVICE_TOKEN env var read at startup.
+//   Set on nexus.Client (outbound) and api.ServerConfig (inbound from Forge).
+//
 // AT-Fix-01: path containment check in reindexOnEvent uses filepath.Rel
 //   instead of raw string prefix. Eliminates false matches where a project
 //   path is a string prefix of an unrelated sibling path.
@@ -74,6 +77,11 @@ func run(logger *log.Logger) error {
 	workspaceRoot := config.ExpandHome(config.EnvOrDefault("ATLAS_WORKSPACE", config.DefaultWorkspace))
 	nexusAddr     := config.EnvOrDefault("NEXUS_HTTP_ADDR", config.DefaultNexusAddr)
 	dbPath        := config.ExpandHome(config.EnvOrDefault("ATLAS_DB_PATH", config.DefaultDBPath))
+	// ADR-008: outbound token for Nexus calls + inbound token expected from Forge.
+	serviceToken  := config.EnvOrDefault("ATLAS_SERVICE_TOKEN", "")
+	if serviceToken == "" {
+		logger.Println("WARNING: ATLAS_SERVICE_TOKEN not set — inter-service auth disabled")
+	}
 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
@@ -88,7 +96,7 @@ func run(logger *log.Logger) error {
 	defer s.Close()
 
 	// ── 3. NEXUS CLIENT ──────────────────────────────────────────────────────
-	nexus := nexusclient.New(nexusAddr)
+	nexus := nexusclient.New(nexusAddr).WithServiceToken(serviceToken)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
@@ -121,11 +129,12 @@ func run(logger *log.Logger) error {
 
 	// ── 10. HTTP API ──────────────────────────────────────────────────────────
 	apiServer := api.NewServer(api.ServerConfig{
-		Addr:        httpAddr,
-		Store:       s,
-		Generator:   generator,
-		QueryRunner: queryRunner,
-		Logger:      logger,
+		Addr:         httpAddr,
+		Store:        s,
+		Generator:    generator,
+		QueryRunner:  queryRunner,
+		Logger:       logger,
+		ServiceToken: serviceToken, // ADR-008: token expected from Forge
 	})
 
 	// ── 11. EVENT SUBSCRIBER (ADR-002) ────────────────────────────────────────
