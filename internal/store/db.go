@@ -341,20 +341,21 @@ func (s *Store) DeleteEdgesBySource(source string) error {
 	return err
 }
 
-// WithEdgeTransaction executes fn inside a SQLite transaction.
-// If fn returns an error the transaction is rolled back and the error returned.
-// The caller should not call Commit/Rollback — this method owns the lifecycle.
+// WithEdgeTransaction executes fn atomically by wrapping it in a SQLite
+// BEGIN/COMMIT transaction. Edge operations inside fn use s.db directly —
+// SQLite serialises writes through the same connection so this is safe.
+// A failure in fn rolls back all edge changes for that source.
 // AT-H-02: used by BuildAll to make delete+rebuild atomic per edge source.
 func (s *Store) WithEdgeTransaction(fn func() error) error {
-	tx, err := s.db.Begin()
+	_, err := s.db.Exec("BEGIN")
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	if err := fn(); err != nil {
-		_ = tx.Rollback()
-		return err
+	if fnErr := fn(); fnErr != nil {
+		_, _ = s.db.Exec("ROLLBACK")
+		return fnErr
 	}
-	if err := tx.Commit(); err != nil {
+	if _, err := s.db.Exec("COMMIT"); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil

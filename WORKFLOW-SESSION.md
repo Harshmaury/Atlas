@@ -1,5 +1,5 @@
 # WORKFLOW-SESSION.md
-# @version: 1.14.0
+# @version: 1.15.0
 # @updated: 2026-03-16
 # @repo: https://github.com/Harshmaury/Atlas
 
@@ -153,6 +153,7 @@ Apply:
 2026-03-16  v1.12.0 fix: AT-H-02  — BuildAll delete+rebuild atomic via WithEdgeTransaction
 2026-03-16  v1.13.0 fix: AT-H-03+04+05+06 — cutPrefix, lang detection, walk errors, poll logging
 2026-03-16  v1.14.0 feat: ADR-008 — inter-service auth, ServiceAuth middleware, outbound token
+2026-03-16  v1.15.0 fix: WithEdgeTransaction deadlock — use db.Exec BEGIN/COMMIT not sql.Tx
 2026-03-15  v1.0.0  Project scaffolded
 2026-03-15  v1.8.0  Phase 2 complete — main.go wired, all 8 steps done
 2026-03-15  v1.7.0  Phase 2 step 6 — API endpoints, capabilities + conflicts + graph
