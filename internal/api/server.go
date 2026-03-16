@@ -1,5 +1,6 @@
 // @atlas-project: atlas
 // @atlas-path: internal/api/server.go
+// ADR-008: ServiceAuth middleware wired — validates X-Service-Token from Forge.
 // Atlas HTTP API server on 127.0.0.1:8081 (ADR-003).
 //
 // Phase 2 additions:
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Harshmaury/Atlas/internal/api/handler"
+	"github.com/Harshmaury/Atlas/internal/api/middleware"
 	atlascontext "github.com/Harshmaury/Atlas/internal/context"
 	"github.com/Harshmaury/Atlas/internal/graph"
 	"github.com/Harshmaury/Atlas/internal/store"
@@ -27,7 +29,8 @@ type ServerConfig struct {
 	Store       store.Storer
 	Generator   *atlascontext.Generator
 	QueryRunner *graph.QueryRunner   // Phase 2 — nil-safe, routes disabled if nil
-	Logger      *log.Logger
+	Logger        *log.Logger
+	ServiceToken  string // ADR-008: expected token from Forge; empty = unauthenticated
 }
 
 // Server is the Atlas HTTP server.
@@ -65,10 +68,17 @@ func NewServer(cfg ServerConfig) *Server {
 		mux.HandleFunc("GET /workspace/conflicts",    capH.Conflicts)
 	}
 
+	// ADR-008: wrap mux with ServiceAuth — validates X-Service-Token from Forge.
+	serviceTokens := map[string]string{}
+	if cfg.ServiceToken != "" {
+		serviceTokens["forge"] = cfg.ServiceToken
+	}
+	var h http.Handler = middleware.ServiceAuth(serviceTokens, logger)(mux)
+
 	return &Server{
 		http: &http.Server{
 			Addr:         cfg.Addr,
-			Handler:      mux,
+			Handler:      h,
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 15 * time.Second,
 			IdleTimeout:  60 * time.Second,
