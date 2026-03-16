@@ -13,14 +13,22 @@ import "time"
 // ── PHASE 1 TYPES ─────────────────────────────────────────────────────────────
 
 // Project is a workspace project known to Atlas.
+//
+// Phase 3 additions (ADR-009):
+//   Status           — "verified" | "unverified" based on nexus.yaml validation
+//   CapabilitiesJSON — JSON array of declared capability strings from nexus.yaml
+//   DependsOnJSON    — JSON array of project IDs this project depends on
 type Project struct {
-	ID        string
-	Name      string
-	Path      string
-	Language  string
-	Type      string
-	Source    string // "nexus" | "detected"
-	IndexedAt time.Time
+	ID               string
+	Name             string
+	Path             string
+	Language         string
+	Type             string
+	Source           string // "nexus" | "detected"
+	Status           string // "verified" | "unverified" (Phase 3 / ADR-009)
+	CapabilitiesJSON string // JSON array e.g. ["rest-api","event-emitter"]
+	DependsOnJSON    string // JSON array e.g. ["postgres","redis"]
+	IndexedAt        time.Time
 }
 
 // File is an indexed source file.
@@ -80,6 +88,7 @@ type Storer interface {
 	UpsertProject(p *Project) error
 	GetProject(id string) (*Project, error)
 	GetAllProjects() ([]*Project, error)
+	GetVerifiedProjects() ([]*Project, error) // Phase 3: verified only
 	DeleteProject(id string) error
 
 	// ── Files ──────────────────────────────────────────────────

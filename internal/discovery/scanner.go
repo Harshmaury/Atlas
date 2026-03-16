@@ -1,11 +1,12 @@
 // @atlas-project: atlas
 // @atlas-path: internal/discovery/scanner.go
 // AT-H-04: manifestLanguage iteration order is now deterministic.
-//   map iteration in Go is random — if a directory contains both go.mod
-//   and package.json the detected language was non-deterministic.
-//   Replaced with manifestPriority, an ordered slice that defines
-//   precedence: .nexus.yaml > go.mod > Cargo.toml > pyproject.toml >
-//   requirements.txt > package.json — more specific manifests win.
+//
+// Phase 3 (ADR-009): scanner now validates nexus.yaml for each discovered
+// project and sets status=verified|unverified accordingly.
+// Heuristic detection (manifest files, directory names) is demoted to
+// discovery hints — these projects receive status=unverified.
+// Only projects with a valid nexus.yaml receive status=verified.
 //
 // Package discovery walks the workspace and detects projects.
 // It supplements the Nexus project registry (ADR-001) with locally
@@ -13,27 +14,25 @@
 package discovery
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/Harshmaury/Atlas/internal/store"
+	"github.com/Harshmaury/Atlas/internal/validator"
 	nexusclient "github.com/Harshmaury/Atlas/internal/nexus"
-	"gopkg.in/yaml.v3"
 )
 
 // ── LANGUAGE DETECTION ───────────────────────────────────────────────────────
 
-// manifestPriority defines manifest filenames in detection precedence order.
-// AT-H-04: ordered slice replaces map to guarantee deterministic language
-// detection when a directory contains multiple manifests (e.g. a Go project
-// with an embedded package.json for frontend tooling).
-// First match wins — more specific manifests are listed first.
 type manifestEntry struct {
 	filename string
 	language string
 }
 
+// manifestPriority defines manifest filenames in detection precedence order.
+// AT-H-04: ordered slice guarantees deterministic language detection.
 var manifestPriority = []manifestEntry{
 	{"go.mod",           "go"},
 	{"Cargo.toml",       "rust"},
@@ -71,31 +70,6 @@ func LanguageForExtension(ext string) string {
 	return extensionLanguage[strings.ToLower(ext)]
 }
 
-// ── NEXUS YAML ───────────────────────────────────────────────────────────────
-
-// nexusManifest is the parsed .nexus.yaml structure.
-type nexusManifest struct {
-	Name     string `yaml:"name"`
-	ID       string `yaml:"id"`
-	Language string `yaml:"language"`
-	Type     string `yaml:"type"`
-}
-
-func readNexusManifest(projectPath string) (*nexusManifest, error) {
-	data, err := os.ReadFile(filepath.Join(projectPath, ".nexus.yaml"))
-	if err != nil {
-		return nil, err
-	}
-	var m nexusManifest
-	if err := yaml.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-	if m.ID == "" {
-		m.ID = strings.ToLower(strings.ReplaceAll(m.Name, " ", "-"))
-	}
-	return &m, nil
-}
-
 // ── SCANNER ──────────────────────────────────────────────────────────────────
 
 // Scanner discovers projects in the workspace.
@@ -110,24 +84,28 @@ func NewScanner(workspaceRoot string) *Scanner {
 }
 
 // ScanResult is one discovered project.
+// Phase 3: Status is always set — "verified" or "unverified".
 type ScanResult struct {
-	ID       string
-	Name     string
-	Path     string
-	Language string
-	Type     string
-	Source   string // "nexus" | "detected"
+	ID               string
+	Name             string
+	Path             string
+	Language         string
+	Type             string
+	Source           string // "nexus" | "detected"
+	Status           string // "verified" | "unverified"
+	CapabilitiesJSON string // JSON array from nexus.yaml
+	DependsOnJSON    string // JSON array from nexus.yaml
 }
 
 // ScanWorkspace walks the workspace and returns all discovered projects.
-// It does not consult Nexus — use MergeWithNexus to combine results.
+// Phase 3: each result has Status set based on nexus.yaml validation.
 func (s *Scanner) ScanWorkspace() ([]*ScanResult, error) {
 	var results []*ScanResult
 	seen := map[string]bool{}
 
 	err := filepath.WalkDir(s.workspaceRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable dirs
+			return nil
 		}
 		if !d.IsDir() {
 			return nil
@@ -145,32 +123,29 @@ func (s *Scanner) ScanWorkspace() ([]*ScanResult, error) {
 			return nil
 		}
 
-		// .nexus.yaml is the strongest signal — use it preferentially.
-		if m, err := readNexusManifest(path); err == nil && m.Name != "" {
+		// Phase 3: always try nexus.yaml first — it is the authoritative descriptor.
+		result := tryNexusYAML(path)
+		if result != nil {
 			seen[path] = true
-			results = append(results, &ScanResult{
-				ID:       m.ID,
-				Name:     m.Name,
-				Path:     path,
-				Language: m.Language,
-				Type:     m.Type,
-				Source:   "detected",
-			})
+			results = append(results, result)
 			return filepath.SkipDir
 		}
 
-		// Fall back to language manifest detection (AT-H-04: ordered, deterministic).
+		// Fall back to heuristic manifest detection — produces unverified status.
 		for _, m := range manifestPriority {
 			if _, err := os.Stat(filepath.Join(path, m.filename)); err == nil {
 				seen[path] = true
 				name := filepath.Base(path)
 				results = append(results, &ScanResult{
-					ID:       strings.ToLower(name),
-					Name:     name,
-					Path:     path,
-					Language: m.language,
-					Type:     "project",
-					Source:   "detected",
+					ID:               strings.ToLower(name),
+					Name:             name,
+					Path:             path,
+					Language:         m.language,
+					Type:             "project",
+					Source:           "detected",
+					Status:           "unverified",
+					CapabilitiesJSON: "[]",
+					DependsOnJSON:    "[]",
 				})
 				return filepath.SkipDir
 			}
@@ -182,32 +157,110 @@ func (s *Scanner) ScanWorkspace() ([]*ScanResult, error) {
 	return results, err
 }
 
+// tryNexusYAML attempts to read and validate nexus.yaml in projectPath.
+// Returns a ScanResult with verified/unverified status, or nil if no
+// nexus.yaml exists and no heuristic match was found at all.
+func tryNexusYAML(projectPath string) *ScanResult {
+	result := validator.ValidateDir(projectPath)
+
+	// No file at all — let heuristic detection handle it.
+	if len(result.Errors) == 1 && strings.Contains(result.Errors[0], "not found") {
+		return nil
+	}
+
+	// File exists but failed to parse or validate — still index as unverified.
+	if !result.Valid || result.Descriptor == nil {
+		name := filepath.Base(projectPath)
+		return &ScanResult{
+			ID:               strings.ToLower(name),
+			Name:             name,
+			Path:             projectPath,
+			Source:           "detected",
+			Status:           "unverified",
+			CapabilitiesJSON: "[]",
+			DependsOnJSON:    "[]",
+		}
+	}
+
+	d := result.Descriptor
+	id := d.ID
+	if id == "" {
+		id = strings.ToLower(strings.ReplaceAll(d.Name, " ", "-"))
+	}
+
+	capsJSON := marshalStringSlice(d.Capabilities)
+	depsJSON := marshalStringSlice(d.DependsOn)
+
+	return &ScanResult{
+		ID:               id,
+		Name:             d.Name,
+		Path:             projectPath,
+		Language:         d.Language,
+		Type:             d.Type,
+		Source:           "detected",
+		Status:           "verified",
+		CapabilitiesJSON: capsJSON,
+		DependsOnJSON:    depsJSON,
+	}
+}
+
+// marshalStringSlice returns a JSON array string for a string slice.
+// Returns "[]" for nil or empty slices.
+func marshalStringSlice(s []string) string {
+	if len(s) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
 // MergeWithNexus combines scan results with the authoritative Nexus project list.
 // Nexus projects take precedence over locally detected ones (ADR-001).
+// Phase 3: Nexus projects are validated against nexus.yaml to get verified status.
 func MergeWithNexus(scanned []*ScanResult, nexusProjects []*nexusclient.NexusProject) []*store.Project {
 	merged := make(map[string]*store.Project)
 
 	// Add scanned projects first.
 	for _, s := range scanned {
 		merged[s.ID] = &store.Project{
-			ID:       s.ID,
-			Name:     s.Name,
-			Path:     s.Path,
-			Language: s.Language,
-			Type:     s.Type,
-			Source:   "detected",
+			ID:               s.ID,
+			Name:             s.Name,
+			Path:             s.Path,
+			Language:         s.Language,
+			Type:             s.Type,
+			Source:           s.Source,
+			Status:           s.Status,
+			CapabilitiesJSON: s.CapabilitiesJSON,
+			DependsOnJSON:    s.DependsOnJSON,
 		}
 	}
 
-	// Nexus projects overwrite detected ones — Nexus is authoritative.
+	// Nexus projects overwrite detected ones — Nexus is authoritative (ADR-001).
+	// Phase 3: validate nexus.yaml at the registered path to get verified status.
 	for _, n := range nexusProjects {
+		vr := validator.ValidateDir(n.Path)
+		status := vr.StatusString()
+
+		capsJSON := "[]"
+		depsJSON := "[]"
+		if vr.Valid && vr.Descriptor != nil {
+			capsJSON = marshalStringSlice(vr.Descriptor.Capabilities)
+			depsJSON = marshalStringSlice(vr.Descriptor.DependsOn)
+		}
+
 		merged[n.ID] = &store.Project{
-			ID:       n.ID,
-			Name:     n.Name,
-			Path:     n.Path,
-			Language: n.Language,
-			Type:     n.ProjectType,
-			Source:   "nexus",
+			ID:               n.ID,
+			Name:             n.Name,
+			Path:             n.Path,
+			Language:         n.Language,
+			Type:             n.ProjectType,
+			Source:           "nexus",
+			Status:           status,
+			CapabilitiesJSON: capsJSON,
+			DependsOnJSON:    depsJSON,
 		}
 	}
 
@@ -220,7 +273,6 @@ func MergeWithNexus(scanned []*ScanResult, nexusProjects []*nexusclient.NexusPro
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
-// isSkippedDir returns true for directories that should never be scanned.
 func isSkippedDir(name string) bool {
 	switch name {
 	case ".git", "node_modules", "vendor", ".cache", "__pycache__",

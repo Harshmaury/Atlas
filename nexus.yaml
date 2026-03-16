@@ -1,0 +1,21 @@
+name: atlas
+id: atlas
+type: web-api
+language: go
+version: 0.4.0
+keywords:
+  - atlas
+  - workspace
+  - knowledge
+  - indexer
+capabilities:
+  - workspace-indexing
+  - capability-detection
+  - graph-builder
+  - conflict-detection
+  - full-text-search
+depends_on:
+  - nexus
+runtime:
+  provider: process
+  port: 8081

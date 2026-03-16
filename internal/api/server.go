@@ -7,6 +7,10 @@
 //   GET /workspace/capabilities  — all indexed capability claims
 //   GET /workspace/conflicts     — duplicate ownership, undefined consumers, orphaned ADRs
 //   GET /workspace/graph         — workspace relationship graph edges
+//
+// Phase 3 additions (ADR-009):
+//   GET /graph/services          — verified projects only (stable contract for Forge Phase 4)
+//   middleware.TraceID           — X-Trace-ID propagation
 package api
 
 import (
@@ -25,10 +29,10 @@ import (
 
 // ServerConfig holds all dependencies for the Atlas HTTP server.
 type ServerConfig struct {
-	Addr        string
-	Store       store.Storer
-	Generator   *atlascontext.Generator
-	QueryRunner *graph.QueryRunner   // Phase 2 — nil-safe, routes disabled if nil
+	Addr          string
+	Store         store.Storer
+	Generator     *atlascontext.Generator
+	QueryRunner   *graph.QueryRunner // Phase 2 — nil-safe, routes disabled if nil
 	Logger        *log.Logger
 	ServiceToken  string // ADR-008: expected token from Forge; empty = unauthenticated
 }
@@ -46,18 +50,18 @@ func NewServer(cfg ServerConfig) *Server {
 		logger = log.Default()
 	}
 
-	workspaceH   := handler.NewWorkspaceHandler(cfg.Store, cfg.Generator)
-	graphH       := handler.NewGraphHandler(cfg.Store)
+	workspaceH := handler.NewWorkspaceHandler(cfg.Store, cfg.Generator)
+	graphH     := handler.NewGraphHandler(cfg.Store)
 
 	mux := http.NewServeMux()
 
 	// ── Phase 1 routes ──────────────────────────────────────────────────────
-	mux.HandleFunc("GET /health",                handleHealth)
-	mux.HandleFunc("GET /workspace",             workspaceH.Summary)
-	mux.HandleFunc("GET /workspace/projects",    workspaceH.Projects)
+	mux.HandleFunc("GET /health",                 handleHealth)
+	mux.HandleFunc("GET /workspace",              workspaceH.Summary)
+	mux.HandleFunc("GET /workspace/projects",     workspaceH.Projects)
 	mux.HandleFunc("GET /workspace/project/{id}", workspaceH.Project)
-	mux.HandleFunc("GET /workspace/search",      workspaceH.Search)
-	mux.HandleFunc("GET /workspace/context",     workspaceH.Context)
+	mux.HandleFunc("GET /workspace/search",       workspaceH.Search)
+	mux.HandleFunc("GET /workspace/context",      workspaceH.Context)
 
 	// ── Phase 2 routes ──────────────────────────────────────────────────────
 	mux.HandleFunc("GET /workspace/graph", graphH.Graph)
@@ -68,12 +72,20 @@ func NewServer(cfg ServerConfig) *Server {
 		mux.HandleFunc("GET /workspace/conflicts",    capH.Conflicts)
 	}
 
+	// ── Phase 3 routes (ADR-009) ─────────────────────────────────────────────
+	// GET /graph/services — stable contract endpoint, verified projects only.
+	// Used by Forge Phase 4 pre-execution validation (ADR-010).
+	mux.HandleFunc("GET /graph/services", workspaceH.GraphServices)
+
 	// ADR-008: wrap mux with ServiceAuth — validates X-Service-Token from Forge.
 	serviceTokens := map[string]string{}
 	if cfg.ServiceToken != "" {
 		serviceTokens["forge"] = cfg.ServiceToken
 	}
-	var h http.Handler = middleware.ServiceAuth(serviceTokens, logger)(mux)
+
+	var h http.Handler = mux
+	h = middleware.ServiceAuth(serviceTokens, logger)(h) // ADR-008
+	h = middleware.TraceID(h)                            // Phase 3: X-Trace-ID propagation
 
 	return &Server{
 		http: &http.Server{

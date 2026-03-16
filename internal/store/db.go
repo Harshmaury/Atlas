@@ -56,13 +56,17 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) UpsertProject(p *Project) error {
 	now := time.Now().UTC()
 	_, err := s.db.Exec(`
-		INSERT INTO projects (id, name, path, language, type, source, indexed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO projects (id, name, path, language, type, source, status, capabilities_json, depends_on_json, indexed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name, path=excluded.path,
 			language=excluded.language, type=excluded.type,
-			source=excluded.source, indexed_at=excluded.indexed_at
-	`, p.ID, p.Name, p.Path, p.Language, p.Type, p.Source, now)
+			source=excluded.source, status=excluded.status,
+			capabilities_json=excluded.capabilities_json,
+			depends_on_json=excluded.depends_on_json,
+			indexed_at=excluded.indexed_at
+	`, p.ID, p.Name, p.Path, p.Language, p.Type, p.Source,
+		p.Status, p.CapabilitiesJSON, p.DependsOnJSON, now)
 	if err != nil {
 		return fmt.Errorf("upsert project %s: %w", p.ID, err)
 	}
@@ -71,9 +75,10 @@ func (s *Store) UpsertProject(p *Project) error {
 
 func (s *Store) GetProject(id string) (*Project, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, path, language, type, source, indexed_at FROM projects WHERE id = ?`, id)
+		`SELECT id, name, path, language, type, source, status, capabilities_json, depends_on_json, indexed_at FROM projects WHERE id = ?`, id)
 	p := &Project{}
-	err := row.Scan(&p.ID, &p.Name, &p.Path, &p.Language, &p.Type, &p.Source, &p.IndexedAt)
+	err := row.Scan(&p.ID, &p.Name, &p.Path, &p.Language, &p.Type, &p.Source,
+		&p.Status, &p.CapabilitiesJSON, &p.DependsOnJSON, &p.IndexedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -85,21 +90,25 @@ func (s *Store) GetProject(id string) (*Project, error) {
 
 func (s *Store) GetAllProjects() ([]*Project, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, path, language, type, source, indexed_at FROM projects ORDER BY name`)
+		`SELECT id, name, path, language, type, source, status, capabilities_json, depends_on_json, indexed_at FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("get all projects: %w", err)
 	}
 	defer rows.Close()
+	return scanProjects(rows)
+}
 
-	var projects []*Project
-	for rows.Next() {
-		p := &Project{}
-		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &p.Language, &p.Type, &p.Source, &p.IndexedAt); err != nil {
-			return nil, fmt.Errorf("scan project: %w", err)
-		}
-		projects = append(projects, p)
+// GetVerifiedProjects returns only projects with status=verified.
+// Phase 3 (ADR-009): graph builder and capability indexer use this to
+// exclude unverified projects from conflict detection and graph edges.
+func (s *Store) GetVerifiedProjects() ([]*Project, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, path, language, type, source, status, capabilities_json, depends_on_json, indexed_at FROM projects WHERE status = 'verified' ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("get verified projects: %w", err)
 	}
-	return projects, rows.Err()
+	defer rows.Close()
+	return scanProjects(rows)
 }
 
 func (s *Store) DeleteProject(id string) error {
@@ -431,6 +440,15 @@ var allMigrations = []schemaVersion{
 	{2, `CREATE INDEX IF NOT EXISTS idx_edge_from  ON graph_edges(from_id)`},
 	{2, `CREATE INDEX IF NOT EXISTS idx_edge_to    ON graph_edges(to_id)`},
 	{2, `CREATE INDEX IF NOT EXISTS idx_edge_type  ON graph_edges(edge_type)`},
+
+	// v3 — nexus.yaml metadata contract (Phase 3 / ADR-009)
+	// Adds status, capabilities_json, depends_on_json to projects table.
+	// Existing rows default to status=unverified — they gain verified
+	// status on next index cycle once nexus.yaml is detected and valid.
+	{3, `ALTER TABLE projects ADD COLUMN status            TEXT NOT NULL DEFAULT 'unverified'`},
+	{3, `ALTER TABLE projects ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '[]'`},
+	{3, `ALTER TABLE projects ADD COLUMN depends_on_json   TEXT NOT NULL DEFAULT '[]'`},
+	{3, `CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)`},
 }
 
 func (s *Store) migrate() error {
@@ -470,6 +488,20 @@ func (s *Store) migrate() error {
 }
 
 // ── SCAN HELPERS ─────────────────────────────────────────────────────────────
+
+// scanProjects scans project rows including Phase 3 columns.
+func scanProjects(rows *sql.Rows) ([]*Project, error) {
+	var projects []*Project
+	for rows.Next() {
+		p := &Project{}
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &p.Language, &p.Type, &p.Source,
+			&p.Status, &p.CapabilitiesJSON, &p.DependsOnJSON, &p.IndexedAt); err != nil {
+			return nil, fmt.Errorf("scan project: %w", err)
+		}
+		projects = append(projects, p)
+	}
+	return projects, rows.Err()
+}
 
 func scanFiles(rows *sql.Rows) ([]*File, error) {
 	var files []*File
