@@ -2,6 +2,7 @@
 // @atlas-path: internal/nexus/client.go
 // ADR-008: serviceToken field added; get() helper injects X-Service-Token
 // on every outbound request except /health (which is always open).
+// Phase 15: get() also propagates X-Trace-ID from context when present.
 // Package nexus provides an HTTP client for querying the Nexus API.
 // Atlas reads project data from Nexus — it never writes to Nexus state.
 // ADR-001: Nexus is the canonical project registry.
@@ -13,6 +14,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	nexusevents "github.com/Harshmaury/Nexus/pkg/events"
 )
 
 const defaultTimeout = 10 * time.Second
@@ -49,6 +52,8 @@ func (c *Client) WithServiceToken(token string) *Client {
 }
 
 // get is an internal helper that creates an authenticated GET request.
+// Phase 15: forwards X-Trace-ID from context when present so the full
+// call chain is traceable across Nexus and Atlas event logs.
 func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
@@ -56,6 +61,9 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 	}
 	if c.serviceToken != "" && path != "/health" {
 		req.Header.Set("X-Service-Token", c.serviceToken)
+	}
+	if traceID := traceIDFromContext(ctx); traceID != "" {
+		req.Header.Set(nexusevents.TraceIDHeader, traceID)
 	}
 	return c.httpClient.Do(req)
 }
@@ -102,4 +110,14 @@ func (c *Client) Ping(ctx context.Context) error {
 		return fmt.Errorf("nexus health check: HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// traceIDKey is the unexported context key used by Atlas middleware.
+// Mirrors the key in Nexus middleware/traceid.go — kept in sync manually.
+type traceIDKey struct{}
+
+// traceIDFromContext extracts the trace ID from a context if present.
+func traceIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(traceIDKey{}).(string)
+	return id
 }

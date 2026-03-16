@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	nexusevents "github.com/Harshmaury/Nexus/pkg/events"
@@ -83,13 +82,18 @@ func (s *Subscriber) Run(ctx context.Context) error {
 	}
 }
 
-// poll fetches recent events from Nexus and dispatches workspace events.
+// poll fetches events from Nexus since the last seen ID and dispatches workspace events.
+// Phase 15: uses ?since=<id> for efficient incremental polling instead of
+// fetching all recent events on every tick. This reduces both payload size
+// and the risk of replaying already-processed events.
 func (s *Subscriber) poll(ctx context.Context) {
-	// Build path with query params then use client.get() so X-Service-Token
-	// is injected automatically (ADR-008).
-	path := fmt.Sprintf("/events?limit=%d", pollEventLimit)
+	// Build path using since= for incremental fetch (Phase 15).
+	// Falls back to limit-only on first poll when lastID is 0.
+	var path string
 	if s.lastID > 0 {
-		path += "&since=" + strconv.FormatInt(s.lastID, 10)
+		path = fmt.Sprintf("/events?since=%d&limit=%d", s.lastID, pollEventLimit)
+	} else {
+		path = fmt.Sprintf("/events?limit=%d", pollEventLimit)
 	}
 
 	resp, err := s.client.get(ctx, path)
