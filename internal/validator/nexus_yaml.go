@@ -39,6 +39,8 @@ var ValidTypes = map[string]bool{
 	"library":         true,
 	"automation":      true,
 	"ml-service":      true,
+	"governance":      true,
+	"tool":            true,
 }
 
 // semverRE matches a basic semver string e.g. 1.0.0 or 2.3.1-alpha.
