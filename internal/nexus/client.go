@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	canon "github.com/Harshmaury/Canon/identity"
 	"time"
 
 	nexusevents "github.com/Harshmaury/Nexus/pkg/events"
@@ -60,7 +62,7 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 		return nil, err
 	}
 	if c.serviceToken != "" && path != "/health" {
-		req.Header.Set("X-Service-Token", c.serviceToken)
+		req.Header.Set(canon.ServiceTokenHeader, c.serviceToken)
 	}
 	if traceID := traceIDFromContext(ctx); traceID != "" {
 		req.Header.Set(nexusevents.TraceIDHeader, traceID)
