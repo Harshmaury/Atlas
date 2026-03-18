@@ -2,12 +2,12 @@ name: atlas
 id: atlas
 type: web-api
 language: go
-version: 0.4.0
+version: 0.5.0
 keywords:
   - atlas
-  - workspace
   - knowledge
-  - indexer
+  - workspace
+  - graph
 capabilities:
   - workspace-indexing
   - capability-detection
