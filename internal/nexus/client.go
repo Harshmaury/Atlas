@@ -2,7 +2,8 @@
 // @atlas-path: internal/nexus/client.go
 // ADR-008: serviceToken field added; get() helper injects X-Service-Token
 // on every outbound request except /health (which is always open).
-// Phase 15: get() also propagates X-Trace-ID from context when present.
+// ISSUE-002 fix: removed duplicate traceIDKey — now uses middleware.TraceIDFromContext
+// so the context key type matches what the TraceID middleware sets.
 // Package nexus provides an HTTP client for querying the Nexus API.
 // Atlas reads project data from Nexus — it never writes to Nexus state.
 // ADR-001: Nexus is the canonical project registry.
@@ -13,10 +14,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-
-	canon "github.com/Harshmaury/Canon/identity"
 	"time"
 
+	canon "github.com/Harshmaury/Canon/identity"
+	"github.com/Harshmaury/Atlas/internal/api/middleware"
 	nexusevents "github.com/Harshmaury/Nexus/pkg/events"
 )
 
@@ -54,8 +55,8 @@ func (c *Client) WithServiceToken(token string) *Client {
 }
 
 // get is an internal helper that creates an authenticated GET request.
-// Phase 15: forwards X-Trace-ID from context when present so the full
-// call chain is traceable across Nexus and Atlas event logs.
+// Uses middleware.TraceIDFromContext so the context key type matches
+// what the TraceID middleware sets — fixing the ISSUE-002 key mismatch.
 func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
@@ -64,7 +65,7 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 	if c.serviceToken != "" && path != "/health" {
 		req.Header.Set(canon.ServiceTokenHeader, c.serviceToken)
 	}
-	if traceID := traceIDFromContext(ctx); traceID != "" {
+	if traceID := middleware.TraceIDFromContext(ctx); traceID != "" {
 		req.Header.Set(nexusevents.TraceIDHeader, traceID)
 	}
 	return c.httpClient.Do(req)
@@ -114,12 +115,5 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
-// traceIDKey is the unexported context key used by Atlas middleware.
-// Mirrors the key in Nexus middleware/traceid.go — kept in sync manually.
-type traceIDKey struct{}
 
-// traceIDFromContext extracts the trace ID from a context if present.
-func traceIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(traceIDKey{}).(string)
-	return id
-}
+
