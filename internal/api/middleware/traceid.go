@@ -3,6 +3,8 @@
 // TraceID middleware for Atlas — Phase 15 / Phase 3.
 // Mirrors the Nexus middleware/traceid.go pattern exactly.
 // Generates or propagates X-Trace-ID on every request.
+//
+// Canon compliance: TraceIDHeader imported from identity — never from pkg/events.
 package middleware
 
 import (
@@ -11,7 +13,7 @@ import (
 	"net/http"
 	"time"
 
-	nexusevents "github.com/Harshmaury/Nexus/pkg/events"
+	"github.com/Harshmaury/Canon/identity"
 )
 
 // traceIDKey is the unexported context key for the trace ID.
@@ -22,12 +24,12 @@ type traceIDKey struct{}
 // Otherwise a new ID is generated. Stored in context and echoed in response.
 func TraceID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get(nexusevents.TraceIDHeader)
+		id := r.Header.Get(identity.TraceIDHeader)
 		if id == "" {
 			id = fmt.Sprintf("atlas-%d", time.Now().UnixNano())
 		}
 		ctx := context.WithValue(r.Context(), traceIDKey{}, id)
-		w.Header().Set(nexusevents.TraceIDHeader, id)
+		w.Header().Set(identity.TraceIDHeader, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

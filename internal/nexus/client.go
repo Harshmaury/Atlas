@@ -18,7 +18,6 @@ import (
 
 	canon "github.com/Harshmaury/Canon/identity"
 	"github.com/Harshmaury/Atlas/internal/api/middleware"
-	nexusevents "github.com/Harshmaury/Nexus/pkg/events"
 )
 
 const defaultTimeout = 10 * time.Second
@@ -66,7 +65,7 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 		req.Header.Set(canon.ServiceTokenHeader, c.serviceToken)
 	}
 	if traceID := middleware.TraceIDFromContext(ctx); traceID != "" {
-		req.Header.Set(nexusevents.TraceIDHeader, traceID)
+		req.Header.Set(canon.TraceIDHeader, traceID)
 	}
 	return c.httpClient.Do(req)
 }
