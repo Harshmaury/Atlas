@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	DefaultHTTPAddr    = ":8081"
+	DefaultHTTPAddr    = "127.0.0.1:8081"
 	DefaultWorkspace   = "~/workspace"
 	DefaultNexusAddr   = "http://127.0.0.1:8080"
 	DefaultDBPath      = "~/.nexus/atlas.db"

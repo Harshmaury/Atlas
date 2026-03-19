@@ -2,7 +2,7 @@ name: atlas
 id: atlas
 type: web-api
 language: go
-version: 0.5.0
+version: 0.6.0-phase4
 keywords:
   - atlas
   - knowledge
