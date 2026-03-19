@@ -1,18 +1,13 @@
 // @atlas-project: atlas
 // @atlas-path: internal/api/handler/workspace.go
-// WorkspaceHandler handles all /workspace routes.
-// Handlers are thin adapters — parse → store/generator query → respond.
-//
-// Phase 3 (ADR-009): stable contract endpoints.
-//   GET /workspace/projects  — all projects with status field
-//   GET /workspace/project/:id — single project with capabilities, depends_on
-//   GET /graph/services — verified projects only (graph membership)
-// Breaking changes to these endpoints require a new ADR.
+// Phase 4: silenced store errors now logged + graceful nil fallback (audit #5).
+// WorkspaceHandler gains a *log.Logger field — injected from ServerConfig.Logger.
 package handler
 
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/Harshmaury/Atlas/internal/context"
@@ -23,11 +18,15 @@ import (
 type WorkspaceHandler struct {
 	store     store.Storer
 	generator *context.Generator
+	logger    *log.Logger
 }
 
 // NewWorkspaceHandler creates a WorkspaceHandler.
-func NewWorkspaceHandler(s store.Storer, g *context.Generator) *WorkspaceHandler {
-	return &WorkspaceHandler{store: s, generator: g}
+func NewWorkspaceHandler(s store.Storer, g *context.Generator, logger *log.Logger) *WorkspaceHandler {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return &WorkspaceHandler{store: s, generator: g, logger: logger}
 }
 
 // Summary handles GET /workspace
@@ -60,7 +59,6 @@ func (h *WorkspaceHandler) Project(w http.ResponseWriter, r *http.Request) {
 		respondErr(w, http.StatusBadRequest, fmt.Errorf("project id required"))
 		return
 	}
-
 	p, err := h.store.GetProject(id)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, fmt.Errorf("get project: %w", err))
@@ -71,15 +69,23 @@ func (h *WorkspaceHandler) Project(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files, _ := h.store.GetFilesByProject(id)
-	docs, _   := h.store.GetDocumentsByProject(id)
+	files, err := h.store.GetFilesByProject(id)
+	if err != nil {
+		h.logger.Printf("WARNING: GetFilesByProject %s: %v — serving empty list", id, err)
+		files = nil
+	}
+	docs, err := h.store.GetDocumentsByProject(id)
+	if err != nil {
+		h.logger.Printf("WARNING: GetDocumentsByProject %s: %v — serving empty list", id, err)
+		docs = nil
+	}
 
 	respondOK(w, map[string]any{
-		"project":      toProjectResponse(p),
-		"files":        len(files),
-		"documents":    len(docs),
-		"file_list":    files,
-		"doc_list":     docs,
+		"project":   toProjectResponse(p),
+		"files":     len(files),
+		"documents": len(docs),
+		"file_list": files,
+		"doc_list":  docs,
 	})
 }
 
@@ -103,8 +109,16 @@ func (h *WorkspaceHandler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files, _ := h.store.SearchFiles(q, 20)
-	docs, _   := h.store.SearchDocuments(q, 10)
+	files, err := h.store.SearchFiles(q, 20)
+	if err != nil {
+		h.logger.Printf("WARNING: SearchFiles %q: %v — serving empty results", q, err)
+		files = nil
+	}
+	docs, err := h.store.SearchDocuments(q, 10)
+	if err != nil {
+		h.logger.Printf("WARNING: SearchDocuments %q: %v — serving empty results", q, err)
+		docs = nil
+	}
 
 	respondOK(w, map[string]any{
 		"query":     q,
@@ -126,7 +140,6 @@ func (h *WorkspaceHandler) Context(w http.ResponseWriter, r *http.Request) {
 // ── RESPONSE TYPES ────────────────────────────────────────────────────────────
 
 // projectResponse is the stable API shape for a project (ADR-009 contract).
-// Adding fields is backward compatible. Removing or renaming fields requires ADR.
 type projectResponse struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
@@ -140,7 +153,6 @@ type projectResponse struct {
 	IndexedAt    string   `json:"indexed_at"`
 }
 
-// toProjectResponse converts a store.Project to the stable API shape.
 func toProjectResponse(p *store.Project) projectResponse {
 	caps := parseStringSlice(p.CapabilitiesJSON)
 	deps := parseStringSlice(p.DependsOnJSON)
@@ -167,7 +179,6 @@ func toProjectResponses(projects []*store.Project) []projectResponse {
 }
 
 // parseStringSlice unmarshals a JSON array string into a []string.
-// Returns an empty slice on any error — never nil.
 func parseStringSlice(raw string) []string {
 	if raw == "" || raw == "[]" {
 		return []string{}

@@ -1,10 +1,12 @@
 // @atlas-project: atlas
 // @atlas-path: internal/api/handler/capabilities.go
-// CapabilityHandler serves Phase 2 capability and conflict detection endpoints.
+// Phase 4: CountCapabilities error now logged + graceful fallback (audit #5).
+// CapabilityHandler gains a *log.Logger field — injected from ServerConfig.Logger.
 package handler
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/Harshmaury/Atlas/internal/graph"
@@ -15,15 +17,18 @@ import (
 type CapabilityHandler struct {
 	store   store.Storer
 	queries *graph.QueryRunner
+	logger  *log.Logger
 }
 
 // NewCapabilityHandler creates a CapabilityHandler.
-func NewCapabilityHandler(s store.Storer, q *graph.QueryRunner) *CapabilityHandler {
-	return &CapabilityHandler{store: s, queries: q}
+func NewCapabilityHandler(s store.Storer, q *graph.QueryRunner, logger *log.Logger) *CapabilityHandler {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return &CapabilityHandler{store: s, queries: q, logger: logger}
 }
 
 // Capabilities handles GET /workspace/capabilities
-// Returns all indexed capability claims grouped by domain and owner.
 func (h *CapabilityHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
 	caps, err := h.store.GetAllCapabilities()
 	if err != nil {
@@ -31,7 +36,11 @@ func (h *CapabilityHandler) Capabilities(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	total, _ := h.store.CountCapabilities()
+	total, err := h.store.CountCapabilities()
+	if err != nil {
+		h.logger.Printf("WARNING: CountCapabilities: %v — using len(caps) as fallback", err)
+		total = len(caps)
+	}
 
 	respondOK(w, map[string]any{
 		"total":        total,
@@ -40,7 +49,6 @@ func (h *CapabilityHandler) Capabilities(w http.ResponseWriter, r *http.Request)
 }
 
 // Conflicts handles GET /workspace/conflicts
-// Runs all conflict detectors and returns the combined report.
 func (h *CapabilityHandler) Conflicts(w http.ResponseWriter, r *http.Request) {
 	report, err := h.queries.RunAll()
 	if err != nil {
