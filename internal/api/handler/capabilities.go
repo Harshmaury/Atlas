@@ -48,12 +48,20 @@ func (h *CapabilityHandler) Conflicts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	total := len(report.DuplicateOwnerships) +
+		len(report.UndefinedConsumers) +
+		len(report.OrphanedADRs) +
+		len(report.CircularDependencies) +
+		len(report.MissingDependencies) +
+		len(report.UndeclaredImports)
+
 	respondOK(w, map[string]any{
-		"duplicate_ownerships": report.DuplicateOwnerships,
-		"undefined_consumers":  report.UndefinedConsumers,
-		"orphaned_adrs":        report.OrphanedADRs,
-		"total_conflicts": len(report.DuplicateOwnerships) +
-			len(report.UndefinedConsumers) +
-			len(report.OrphanedADRs),
+		"total_conflicts":       total,
+		"duplicate_ownerships":  report.DuplicateOwnerships,
+		"undefined_consumers":   report.UndefinedConsumers,
+		"orphaned_adrs":         report.OrphanedADRs,
+		"circular_dependencies": report.CircularDependencies,
+		"missing_dependencies":  report.MissingDependencies,
+		"undeclared_imports":    report.UndeclaredImports,
 	})
 }

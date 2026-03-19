@@ -52,11 +52,34 @@ type OrphanedADRResult struct {
 	Project string
 }
 
+// CircularDependencyResult records a cycle in the depends_on graph.
+type CircularDependencyResult struct {
+	Cycle []string // ordered path of project IDs forming the cycle e.g. [A, B, C, A]
+}
+
+// MissingDependencyResult records a depends_on declaration referencing
+// a project that is not registered in Atlas.
+type MissingDependencyResult struct {
+	ProjectID  string // project that declared the dependency
+	MissingDep string // project ID that does not exist in Atlas
+}
+
+// UndeclaredImportResult records an import-type graph edge where
+// the source project does not declare the target in depends_on.
+type UndeclaredImportResult struct {
+	FromID string // project with the import
+	ToID   string // imported project not in depends_on
+	Source string // where the import edge was detected
+}
+
 // ConflictReport is the full output of a conflict detection run.
 type ConflictReport struct {
 	DuplicateOwnerships []DuplicateOwnershipResult
 	UndefinedConsumers  []UndefinedConsumerResult
 	OrphanedADRs        []OrphanedADRResult
+	CircularDependencies []CircularDependencyResult  // Phase 4
+	MissingDependencies  []MissingDependencyResult   // Phase 4
+	UndeclaredImports    []UndeclaredImportResult    // Phase 4
 }
 
 // ── QUERIES ───────────────────────────────────────────────────────────────────
@@ -71,7 +94,7 @@ func NewQueryRunner(s store.Storer) *QueryRunner {
 	return &QueryRunner{store: s}
 }
 
-// RunAll executes all three conflict detectors and returns a combined report.
+// RunAll executes all conflict detectors and returns a combined report.
 func (q *QueryRunner) RunAll() (*ConflictReport, error) {
 	report := &ConflictReport{}
 	var err error
@@ -80,15 +103,25 @@ func (q *QueryRunner) RunAll() (*ConflictReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("duplicate ownership query: %w", err)
 	}
-
 	report.UndefinedConsumers, err = q.FindUndefinedConsumers()
 	if err != nil {
 		return nil, fmt.Errorf("undefined consumers query: %w", err)
 	}
-
 	report.OrphanedADRs, err = q.FindOrphanedADRs()
 	if err != nil {
 		return nil, fmt.Errorf("orphaned ADRs query: %w", err)
+	}
+	report.CircularDependencies, err = q.FindCircularDependencies()
+	if err != nil {
+		return nil, fmt.Errorf("circular dependency query: %w", err)
+	}
+	report.MissingDependencies, err = q.FindMissingDependencies()
+	if err != nil {
+		return nil, fmt.Errorf("missing dependency query: %w", err)
+	}
+	report.UndeclaredImports, err = q.FindUndeclaredImports()
+	if err != nil {
+		return nil, fmt.Errorf("undeclared imports query: %w", err)
 	}
 
 	return report, nil
@@ -289,4 +322,132 @@ func isADRIdentifier(s string) bool {
 func extractADRID(path string) string {
 	matches := adrReferencePattern.FindString(path)
 	return matches
+}
+
+// ── DETECTOR 4 — Circular dependencies (Phase 4) ─────────────────────────────
+
+// FindCircularDependencies detects cycles in the depends_on edge graph.
+// Uses iterative DFS with a visited/stack set — safe for large graphs.
+func (q *QueryRunner) FindCircularDependencies() ([]CircularDependencyResult, error) {
+	edges, err := q.store.GetAllEdges()
+	if err != nil {
+		return nil, fmt.Errorf("get edges: %w", err)
+	}
+	adj := buildAdjacency(edges, "depends_on")
+	var results []CircularDependencyResult
+	visited := map[string]bool{}
+	for node := range adj {
+		if !visited[node] {
+			if cycle := dfsCycle(node, adj, visited, []string{}); cycle != nil {
+				results = append(results, CircularDependencyResult{Cycle: cycle})
+			}
+		}
+	}
+	return results, nil
+}
+
+// dfsCycle walks the adjacency map depth-first looking for back-edges.
+// Returns the cycle path if found, nil otherwise.
+func dfsCycle(node string, adj map[string][]string, visited map[string]bool, path []string) []string {
+	visited[node] = true
+	path = append(path, node)
+	for _, neighbour := range adj[node] {
+		for i, p := range path {
+			if p == neighbour {
+				return append(path[i:], neighbour) // cycle found
+			}
+		}
+		if !visited[neighbour] {
+			if cycle := dfsCycle(neighbour, adj, visited, path); cycle != nil {
+				return cycle
+			}
+		}
+	}
+	return nil
+}
+
+// buildAdjacency builds a project-to-project adjacency map for a given edge type.
+func buildAdjacency(edges []*store.GraphEdge, edgeType string) map[string][]string {
+	adj := make(map[string][]string)
+	for _, e := range edges {
+		if e.EdgeType == edgeType {
+			adj[e.FromID] = append(adj[e.FromID], e.ToID)
+		}
+	}
+	return adj
+}
+
+// ── DETECTOR 5 — Missing declared dependencies (Phase 4) ─────────────────────
+
+// FindMissingDependencies returns depends_on declarations referencing
+// a project ID that is not registered in Atlas.
+func (q *QueryRunner) FindMissingDependencies() ([]MissingDependencyResult, error) {
+	projects, err := q.store.GetAllProjects()
+	if err != nil {
+		return nil, fmt.Errorf("get projects: %w", err)
+	}
+	edges, err := q.store.GetAllEdges()
+	if err != nil {
+		return nil, fmt.Errorf("get edges: %w", err)
+	}
+	known := make(map[string]bool, len(projects))
+	for _, p := range projects {
+		known[p.ID] = true
+	}
+	var results []MissingDependencyResult
+	seen := make(map[string]bool)
+	for _, e := range edges {
+		if e.EdgeType != "depends_on" {
+			continue
+		}
+		key := e.FromID + "→" + e.ToID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if !known[e.ToID] {
+			results = append(results, MissingDependencyResult{
+				ProjectID:  e.FromID,
+				MissingDep: e.ToID,
+			})
+		}
+	}
+	return results, nil
+}
+
+// ── DETECTOR 6 — Undeclared imports (Phase 4) ─────────────────────────────────
+
+// FindUndeclaredImports returns import-type edges where the source project
+// does not declare the target in its depends_on edges.
+// Indicates hidden coupling — code depends on something not formally declared.
+func (q *QueryRunner) FindUndeclaredImports() ([]UndeclaredImportResult, error) {
+	edges, err := q.store.GetAllEdges()
+	if err != nil {
+		return nil, fmt.Errorf("get edges: %w", err)
+	}
+	// Build set of declared depends_on pairs.
+	declared := make(map[string]bool)
+	for _, e := range edges {
+		if e.EdgeType == "depends_on" {
+			declared[e.FromID+"→"+e.ToID] = true
+		}
+	}
+	var results []UndeclaredImportResult
+	seen := make(map[string]bool)
+	for _, e := range edges {
+		if e.EdgeType != "import" {
+			continue
+		}
+		key := e.FromID + "→" + e.ToID
+		if seen[key] || declared[key] {
+			continue
+		}
+		seen[key] = true
+		results = append(results, UndeclaredImportResult{
+			FromID: e.FromID,
+			ToID:   e.ToID,
+			Source: e.Source,
+		})
+	}
+	return results, nil
 }
