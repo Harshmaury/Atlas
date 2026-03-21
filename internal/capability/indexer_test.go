@@ -72,6 +72,9 @@ func (m *mockStore) GetCapabilitiesByOwner(owner string) ([]*store.Capability, e
 func (m *mockStore) GetAllCapabilities() ([]*store.Capability, error) {
 	return m.capabilities, nil
 }
+func (m *mockStore) GetAllDocuments() ([]*store.Document, error)               { return nil, nil }
+func (m *mockStore) GetVerifiedProjects() ([]*store.Project, error)             { return nil, nil }
+func (m *mockStore) WithEdgeTransaction(fn func() error) error                 { return fn() }
 func (m *mockStore) UpsertEdge(e *store.GraphEdge) error                           { return nil }
 func (m *mockStore) GetEdgesFrom(fromID string) ([]*store.GraphEdge, error)        { return nil, nil }
 func (m *mockStore) GetEdgesTo(toID string) ([]*store.GraphEdge, error)            { return nil, nil }

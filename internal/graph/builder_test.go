@@ -46,6 +46,9 @@ func (m *mockStore) UpsertEdge(e *store.GraphEdge) error {
 }
 
 // Unused interface methods.
+func (m *mockStore) GetAllDocuments() ([]*store.Document, error)               { return nil, nil }
+func (m *mockStore) GetVerifiedProjects() ([]*store.Project, error)             { return nil, nil }
+func (m *mockStore) WithEdgeTransaction(fn func() error) error                 { return fn() }
 func (m *mockStore) Close() error                                              { return nil }
 func (m *mockStore) UpsertProject(p *store.Project) error                     { return nil }
 func (m *mockStore) GetProject(id string) (*store.Project, error)             { return nil, nil }

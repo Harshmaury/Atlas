@@ -33,6 +33,15 @@ func (m *queryMockStore) GetDocumentsByProject(pid string) ([]*store.Document, e
 }
 
 // Unused interface methods.
+func (m *queryMockStore) GetAllDocuments() ([]*store.Document, error) {
+	var all []*store.Document
+	for _, docs := range m.documents {
+		all = append(all, docs...)
+	}
+	return all, nil
+}
+func (m *queryMockStore) GetVerifiedProjects() ([]*store.Project, error)        { return nil, nil }
+func (m *queryMockStore) WithEdgeTransaction(fn func() error) error             { return fn() }
 func (m *queryMockStore) Close() error                                              { return nil }
 func (m *queryMockStore) UpsertProject(p *store.Project) error                     { return nil }
 func (m *queryMockStore) GetProject(id string) (*store.Project, error)             { return nil, nil }
