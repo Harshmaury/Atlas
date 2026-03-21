@@ -8,6 +8,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/Harshmaury/Canon v0.3.0
+require github.com/Harshmaury/Canon v0.4.1
 
 replace github.com/Harshmaury/Nexus => ../nexus
