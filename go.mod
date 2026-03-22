@@ -10,3 +10,5 @@ require (
 require github.com/Harshmaury/Canon v1.0.0
 
 replace github.com/Harshmaury/Nexus => ../nexus
+
+replace github.com/Harshmaury/Canon => ../canon

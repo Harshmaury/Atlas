@@ -7,6 +7,10 @@
 // status=unverified — they appear in API responses but are excluded
 // from capability graphs and conflict detection.
 //
+// ADR-016 + CW-7-fix: Descriptor, Runtime, ValidTypes, and status constants
+// are imported from Canon. The local duplicate definitions were removed.
+// No service may define its own Descriptor or ValidTypes outside Canon.
+//
 // Validation is intentionally lenient: unknown fields are ignored,
 // parse errors produce unverified status rather than hard failures.
 // This keeps Atlas resilient to projects at different stages of adoption.
@@ -20,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Harshmaury/Canon/descriptor"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,63 +32,26 @@ import (
 
 const NexusYAMLFile = "nexus.yaml"
 
-// ValidTypes is the set of allowed project type values (ADR-009).
-var ValidTypes = map[string]bool{
-	"platform-daemon": true,
-	"web-api":         true,
-	"worker":          true,
-	"cli":             true,
-	"database":        true,
-	"message-broker":  true,
-	"gateway":         true,
-	"library":         true,
-	"automation":      true,
-	"ml-service":      true,
-	"governance":      true,
-	"tool":            true,
-}
-
 // semverRE matches a basic semver string e.g. 1.0.0 or 2.3.1-alpha.
 var semverRE = regexp.MustCompile(`^\d+\.\d+\.\d+`)
-
-// ── DESCRIPTOR ───────────────────────────────────────────────────────────────
-
-// Descriptor is the parsed content of a nexus.yaml file.
-// Required fields: Name, ID, Type, Language, Version.
-// Optional fields: Keywords, Capabilities, DependsOn, Runtime.
-type Descriptor struct {
-	Name         string   `yaml:"name"`
-	ID           string   `yaml:"id"`
-	Type         string   `yaml:"type"`
-	Language     string   `yaml:"language"`
-	Version      string   `yaml:"version"`
-	Keywords     []string `yaml:"keywords"`
-	Capabilities []string `yaml:"capabilities"`
-	DependsOn    []string `yaml:"depends_on"`
-	Runtime      Runtime  `yaml:"runtime"`
-}
-
-// Runtime describes how the project is executed.
-type Runtime struct {
-	Provider string `yaml:"provider"` // process | docker | k8s
-	Port     int    `yaml:"port"`
-}
 
 // ── RESULT ───────────────────────────────────────────────────────────────────
 
 // Result is the outcome of validating a nexus.yaml file.
+// Descriptor is a Canon type — import canon/descriptor to consume it directly.
 type Result struct {
-	Descriptor *Descriptor // nil if parse failed
-	Valid       bool        // true only if all required fields pass
-	Errors      []string    // human-readable validation errors
+	Descriptor *descriptor.Descriptor // nil if parse failed
+	Valid       bool                   // true only if all required fields pass
+	Errors      []string               // human-readable validation errors
 }
 
-// StatusString returns "verified" or "unverified" for use in API responses.
+// StatusString returns the canonical status string for use in API responses.
+// Uses descriptor.StatusVerified and descriptor.StatusUnverified — never hardcoded.
 func (r *Result) StatusString() string {
 	if r.Valid {
-		return "verified"
+		return descriptor.StatusVerified
 	}
-	return "unverified"
+	return descriptor.StatusUnverified
 }
 
 // ── VALIDATOR ────────────────────────────────────────────────────────────────
@@ -106,7 +74,7 @@ func ValidateDir(projectPath string) *Result {
 // ValidateBytes parses and validates raw nexus.yaml content.
 // Used directly in tests and by ValidateDir.
 func ValidateBytes(data []byte) *Result {
-	var d Descriptor
+	var d descriptor.Descriptor
 	if err := yaml.Unmarshal(data, &d); err != nil {
 		return &Result{Errors: []string{fmt.Sprintf("parse nexus.yaml: %s", err)}}
 	}
@@ -114,7 +82,8 @@ func ValidateBytes(data []byte) *Result {
 }
 
 // validate runs all field-level checks against a parsed descriptor.
-func validate(d *Descriptor) *Result {
+// Uses descriptor.ValidTypes from Canon — never a local type map.
+func validate(d *descriptor.Descriptor) *Result {
 	var errs []string
 
 	if strings.TrimSpace(d.Name) == "" {
@@ -129,7 +98,7 @@ func validate(d *Descriptor) *Result {
 
 	if strings.TrimSpace(d.Type) == "" {
 		errs = append(errs, "type is required")
-	} else if !ValidTypes[d.Type] {
+	} else if !descriptor.ValidTypes[d.Type] {
 		errs = append(errs, fmt.Sprintf("type %q is not valid", d.Type))
 	}
 
