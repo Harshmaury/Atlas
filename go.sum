@@ -1,5 +1,5 @@
-github.com/Harshmaury/Canon v0.4.1 h1:BvWzAfGFhFjmCrILEEYIN0f0f/VHewNorgVCKhWv2Cw=
-github.com/Harshmaury/Canon v0.4.1/go.mod h1:yGNa8zeXP3JP7uFJusFJeyeNY+w0PnnIJAu2wLuawfE=
+github.com/Harshmaury/Canon v1.0.0 h1:8Z1v4EgUjyLa8W4NP7K8UfvZggEly6OvZf6J3SPtFBQ=
+github.com/Harshmaury/Canon v1.0.0/go.mod h1:yGNa8zeXP3JP7uFJusFJeyeNY+w0PnnIJAu2wLuawfE=
 github.com/mattn/go-sqlite3 v1.14.34 h1:3NtcvcUnFBPsuRcno8pUtupspG/GM+9nZ88zgJcp6Zk=
 github.com/mattn/go-sqlite3 v1.14.34/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=

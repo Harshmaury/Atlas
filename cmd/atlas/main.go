@@ -57,7 +57,7 @@ import (
 	"github.com/Harshmaury/Atlas/internal/indexer"
 	nexusclient "github.com/Harshmaury/Atlas/internal/nexus"
 	"github.com/Harshmaury/Atlas/internal/store"
-	nexusevents "github.com/Harshmaury/Nexus/pkg/events"
+	canonevents "github.com/Harshmaury/Canon/events" // ADR-045: migrated from Nexus/pkg/events
 )
 
 const atlasVersion = "0.2.0"
@@ -148,7 +148,7 @@ func run(logger *log.Logger) error {
 	//            graphBuilder.BuildAll() is NOT called here — it runs on the debounced
 	//            TopicWorkspaceUpdated signal (one call per quiet window, not per file).
 	reindexOnEvent := func(event nexusclient.WorkspaceEvent) {
-		var payload nexusevents.WorkspaceFilePayload
+		var payload canonevents.WorkspaceFilePayload
 		if err := unmarshalPayload(event.Payload, &payload); err != nil {
 			return
 		}
@@ -185,14 +185,14 @@ func run(logger *log.Logger) error {
 		}
 	}
 
-	subscriber.Subscribe(nexusevents.TopicWorkspaceFileCreated,  reindexOnEvent)
-	subscriber.Subscribe(nexusevents.TopicWorkspaceFileModified, reindexOnEvent)
-	subscriber.Subscribe(nexusevents.TopicWorkspaceFileDeleted,  reindexOnEvent)
+	subscriber.Subscribe(canonevents.TopicWorkspaceFileCreated,  reindexOnEvent)
+	subscriber.Subscribe(canonevents.TopicWorkspaceFileModified, reindexOnEvent)
+	subscriber.Subscribe(canonevents.TopicWorkspaceFileDeleted,  reindexOnEvent)
 
 	// TopicWorkspaceUpdated fires once per debounce window after a burst of
 	// file events settles. Running BuildAll here (rather than per-file) means
 	// graph edges are rebuilt at most once per quiet period — not once per save.
-	subscriber.Subscribe(nexusevents.TopicWorkspaceUpdated,
+	subscriber.Subscribe(canonevents.TopicWorkspaceUpdated,
 		func(event nexusclient.WorkspaceEvent) {
 			if _, err := graphBuilder.BuildAll(); err != nil {
 				logger.Printf("WARNING: graph rebuild on workspace update: %v", err)
@@ -200,7 +200,7 @@ func run(logger *log.Logger) error {
 		},
 	)
 
-	subscriber.Subscribe(nexusevents.TopicWorkspaceProjectDetected,
+	subscriber.Subscribe(canonevents.TopicWorkspaceProjectDetected,
 		func(event nexusclient.WorkspaceEvent) {
 			logger.Printf("new project detected — running full index")
 			runFullIndex(ctx, logger, nexus, scanner, srcIndexer, docIndexer,
