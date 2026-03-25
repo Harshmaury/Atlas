@@ -1,90 +1,70 @@
+// @atlas-project: atlas
+// @atlas-path: SERVICE-CONTRACT.md
 # SERVICE-CONTRACT.md — Atlas
+# @version: 0.5.0-phase3
+# @updated: 2026-03-25
 
-**Service:** atlas
-**Domain:** Knowledge
-**Port:** 8081
-**ADRs:** ADR-001 (sources from Nexus), ADR-006 (context for Forge),
-         ADR-008 (auth), ADR-009 (nexus.yaml contract)
-**Version:** 0.5.0-phase3
-**Updated:** 2026-03-18
+**Port:** 8081 · **DB:** `~/.nexus/atlas.db` · **Domain:** Knowledge
 
 ---
 
-## Role
+## Code
 
-Workspace knowledge service. Indexes the workspace, builds the project
-capability graph, validates nexus.yaml descriptors, and serves structured
-workspace context to Forge. Atlas understands the system — it never acts on it.
-
----
-
-## Inputs
-
-- `Nexus GET /events?since=<id>` — workspace change events (polled every 3s)
-- Local filesystem scan at startup — workspace indexing
-- `nexus.yaml` files in project roots — capability and dependency declarations
+```
+cmd/atlas/main.go              startup wiring
+internal/api/handler/          workspace.go · graph.go · capabilities.go
+internal/nexus/subscriber.go   polls GET /events?since=<id> every 3s
+internal/validator/nexus_yaml.go  parses nexus.yaml, imports Canon/descriptor
+internal/graph/builder.go      builds dependency graph from depends_on fields
+internal/store/db.go           Storer interface, SQLite, versioned migrations
+internal/capability/           parses capability claims from source files
+```
 
 ---
 
-## Outputs
+## Contract
 
-- `GET /health` — health check (no auth)
-- `GET /workspace/projects` — all indexed projects with status (stable contract)
-- `GET /workspace/project/:id` — single project detail
-- `GET /graph/services` — verified projects only (stable Forge preflight feed)
-- `GET /workspace/graph` — graph edges (dependency relationships)
+### Endpoints
 
----
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/health` | none | `{"ok":true,"status":"healthy","service":"atlas"}` |
+| GET | `/workspace/projects` | token | All indexed projects with `status` field |
+| GET | `/workspace/project/:id` | token | Single project detail |
+| GET | `/graph/services` | token | Verified projects only — Forge preflight feed |
+| GET | `/workspace/graph` | token | Dependency edges |
 
-## Dependencies
+`GET /workspace/projects` and `GET /graph/services` are stable contracts. Breaking changes require ADR.
 
-| Service | Used for                          | Auth required   |
-|---------|-----------------------------------|-----------------|
-| Nexus   | Workspace events (polling)        | X-Service-Token |
+### Project status values
 
-Atlas does not depend on Forge, Guardian, Navigator, Observer, Metrics, or Sentinel.
+`status=verified` — `nexus.yaml` present and valid against `Canon/descriptor.ValidTypes`.
+`status=unverified` — heuristic detection only or parse error. Never crashes on bad YAML.
 
----
+### Failure conditions
 
-## Guarantees
-
-- `GET /workspace/projects` and `GET /graph/services` are stable contracts.
-  Breaking changes require a new ADR.
-- `status=verified` is only assigned to projects with a valid `nexus.yaml`.
-  Heuristic-detected projects are always `status=unverified`.
-- `nexus.yaml` parsing is lenient — unknown fields are ignored.
-  Parse errors produce `status=unverified`, never a crash.
-- `GetVerifiedProjects()` is the correct method for the Forge preflight feed.
-- All migrations are in a single ordered slice in `internal/store/db.go`.
+| Code | Condition |
+|------|-----------|
+| 401 | Missing or invalid `X-Service-Token` |
+| 404 | Project not found |
 
 ---
 
-## Non-Responsibilities
+## Control
 
-- Atlas does not start or stop services — that is Nexus's domain.
-- Atlas does not execute commands — that is Forge's domain.
-- Atlas does not own the project registry — Nexus does (ADR-001).
-  Atlas builds a derived view from Nexus events.
-- Atlas never calls Forge, Guardian, Navigator, Observer, or Sentinel.
-- Atlas does not make permit/deny decisions — it provides facts.
-  Forge decides policy from Atlas facts (ADR-006).
+**Startup:** full workspace scan → index all `nexus.yaml` → HTTP server starts.
 
----
+**Poll loop** (`internal/nexus/subscriber.go`): `GET /events?since=<lastID>` every 3s. On `workspace.project.detected` → re-index project. On `workspace.file.*` → re-index source files.
 
-## Data Authority
+**Graph rebuild:** triggered after each indexing pass. Atomic: new graph replaces old under write lock before handlers can read it.
 
-**Primary authority for:**
-- Workspace project capability index — `~/.nexus/atlas.db`
-- Project verification status — derived from nexus.yaml validity
-- Workspace dependency graph — computed from nexus.yaml `depends_on` fields
-
-**Derived from Nexus** — Atlas does not own project registration or runtime state.
+**Token enforcement:** `X-Service-Token` in `internal/api/middleware/service_auth.go`.
 
 ---
 
-## Concurrency Model
+## Context
 
-- SQLite store accessed through `store.Storer` interface.
-- Nexus subscriber goroutine polls events independently of HTTP handlers.
-- HTTP handlers read from SQLite directly — no in-memory cache to synchronise.
-- `X-Trace-ID` middleware propagates trace IDs on all responses.
+- Derives its project list from Nexus events. Does not own project registration.
+- `GET /graph/services` is the authoritative feed for Forge preflight (ADR-010).
+- Atlas never calls Forge, Guardian, Navigator, Observer, Metrics, or Sentinel.
+- Atlas reads. It never starts services, never writes to Nexus state.
